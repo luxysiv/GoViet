@@ -15,7 +15,7 @@ private val SPLIT_WHITESPACE_REGEX = "\\s+".toRegex()
  * Architecture Role:
  * - Manages the IME layer interaction with Android's InputConnection.
  * - Handles composing text buffers (composingRaw), cursor tracking, selection, and backspace logic.
- * - Delegates Vietnamese syllable rules and settings (Telex, VNI, Simple Telex, Modern Style, Macros) to GoVietInputEngine.
+ * - Delegates Vietnamese syllable rules and settings (Telex, Simple Telex, Modern Style, Macros) to GoVietInputEngine.
  */
 class ImeInputConnectionController(
     private val service: VietnameseInputMethodService,
@@ -64,8 +64,33 @@ class ImeInputConnectionController(
     var composingStartInEditor = -1
     var composingCursorIndex = 0
 
+    // Cached cursor & selection state pushed by Android OS via onUpdateSelection
+    var cachedSelStart: Int = 0
+    var cachedSelEnd: Int = 0
+    var cachedCandidatesStart: Int = -1
+    var cachedCandidatesEnd: Int = -1
+
+    fun onUpdateSelection(
+        oldSelStart: Int, oldSelEnd: Int,
+        newSelStart: Int, newSelEnd: Int,
+        candidatesStart: Int, candidatesEnd: Int
+    ) {
+        cachedSelStart = newSelStart
+        cachedSelEnd = newSelEnd
+        cachedCandidatesStart = candidatesStart
+        cachedCandidatesEnd = candidatesEnd
+    }
+
     data class ImeCommitRecord(val word: String, val timestamp: Long)
     private var lastImeCommit: ImeCommitRecord? = null
+
+    data class ImeSnapshot(
+        val composingRaw: String,
+        val composingCursorIndex: Int,
+        val displayText: String,
+        val shiftState: Int
+    )
+    private val imeUndoStack = ArrayDeque<ImeSnapshot>()
 
     private fun recordImeCommit(word: String) {
         val trimmed = word.trim()
@@ -85,6 +110,7 @@ class ImeInputConnectionController(
         lastKeyPressTime = 0L
         composingStartInEditor = -1
         composingCursorIndex = 0
+        imeUndoStack.clear()
         inputEngine.reset()
     }
 
@@ -96,10 +122,10 @@ class ImeInputConnectionController(
                 type == Character.ENCLOSING_MARK.toInt()
     }
 
-    private fun decomposeWord(word: String, isVni: Boolean): String {
+    private fun decomposeWord(word: String): String {
         val sb = java.lang.StringBuilder()
         for (i in 0 until word.length) {
-            sb.append(VietnameseCharDecomposer.decomposeChar(word[i], isVni))
+            sb.append(VietnameseCharDecomposer.decomposeChar(word[i]))
         }
         return sb.toString()
     }
@@ -145,14 +171,17 @@ class ImeInputConnectionController(
                 (System.currentTimeMillis() - commit.timestamp < 5000) &&
                 (commit.word.equals(fullWordNfc, ignoreCase = true) || commit.word.equals(wordBeforeNfc, ignoreCase = true))
 
-        if (!hasLetterAfter && !isRecentImeCommit) {
+        // Allow adopting the word if cursor is directly after a Vietnamese word (user presses backspace or types a modifier)
+        // or when there are letters after cursor (touching inside a word to edit).
+        val shouldAdopt = hasLetterAfter || isRecentImeCommit || (before.isNotEmpty() && isVietnameseWordChar(before.last()))
+
+        if (!shouldAdopt) {
             return false
         }
 
         if (wordBeforeRaw.isNotEmpty() || wordAfterRaw.isNotEmpty()) {
-            val isVni = (inputEngine.inputMethod == GoVietInputMethod.GoVietVni)
-            val decomposedBefore = decomposeWord(wordBeforeNfc, isVni)
-            val decomposedAfter = decomposeWord(wordAfterNfc, isVni)
+            val decomposedBefore = decomposeWord(wordBeforeNfc)
+            val decomposedAfter = decomposeWord(wordAfterNfc)
             
             composingRaw.clear()
             composingRaw.append(decomposedBefore)
@@ -162,6 +191,46 @@ class ImeInputConnectionController(
             val currentSelStart = fresh?.first ?: service.currentSelStart
             composingStartInEditor = if (currentSelStart >= wordBeforeRaw.length) currentSelStart - wordBeforeRaw.length else -1
             inputEngine.invalidateCache()
+            
+            imeUndoStack.clear()
+            val runningRaw = StringBuilder()
+            for (charIdx in 0 until decomposedBefore.length) {
+                runningRaw.append(decomposedBefore[charIdx])
+                val isLastBefore = (charIdx == decomposedBefore.length - 1)
+                val display = if (isLastBefore && decomposedAfter.isEmpty()) {
+                    wordBeforeNfc
+                } else {
+                    compileText(runningRaw.toString())
+                }
+                imeUndoStack.addLast(
+                    ImeSnapshot(
+                        composingRaw = runningRaw.toString(),
+                        composingCursorIndex = runningRaw.length,
+                        displayText = display,
+                        shiftState = activeComposingShiftState
+                    )
+                )
+            }
+            if (decomposedAfter.isNotEmpty()) {
+                val fullRaw = composingRaw.toString()
+                imeUndoStack.addLast(
+                    ImeSnapshot(
+                        composingRaw = fullRaw,
+                        composingCursorIndex = composingCursorIndex,
+                        displayText = fullWordNfc,
+                        shiftState = activeComposingShiftState
+                    )
+                )
+            } else if (decomposedBefore.isEmpty()) {
+                imeUndoStack.addLast(
+                    ImeSnapshot(
+                        composingRaw = composingRaw.toString(),
+                        composingCursorIndex = composingCursorIndex,
+                        displayText = fullWordNfc,
+                        shiftState = activeComposingShiftState
+                    )
+                )
+            }
             
             if (isImmediateCommitMode()) {
                 ic.deleteSurroundingText(wordBeforeRaw.length, wordAfterRaw.length)
@@ -188,10 +257,8 @@ class ImeInputConnectionController(
         return typingMode == TypingMode.LATIN
     }
 
-    private fun getFreshCursorPosition(ic: InputConnection): Pair<Int, Int>? {
-        val extracted = ic.getExtractedText(android.view.inputmethod.ExtractedTextRequest(), 0)
-            ?: return null
-        return Pair(extracted.selectionStart, extracted.selectionEnd)
+    private fun getFreshCursorPosition(ic: InputConnection): Pair<Int, Int> {
+        return Pair(cachedSelStart, cachedSelEnd)
     }
 
     private fun isComposingStateDesynced(ic: InputConnection): Boolean {
@@ -199,21 +266,22 @@ class ImeInputConnectionController(
         
         val expectedText = lastSetComposingText ?: ""
         if (expectedText.isEmpty()) return false
-        val expectedNfc = java.text.Normalizer.normalize(expectedText, java.text.Normalizer.Form.NFC)
         
-        val actualBefore = ic.getTextBeforeCursor(expectedText.length, 0)?.toString() ?: ""
-        val liveSelected = ic.getSelectedText(0)?.toString() ?: ""
+        // Fast time-based check: if key was typed very recently (< 500ms), trust the local state
+        if (System.currentTimeMillis() - lastKeyPressTime < 500) {
+            return false
+        }
+        
+        val expectedNfc = java.text.Normalizer.normalize(expectedText, java.text.Normalizer.Form.NFC)
+        val actualBefore = ic.getTextBeforeCursor(expectedText.length + 5, 0)?.toString() ?: ""
         val actualBeforeNfc = java.text.Normalizer.normalize(actualBefore, java.text.Normalizer.Form.NFC)
         
-        if (actualBeforeNfc == expectedNfc && liveSelected.isEmpty()) {
+        // In Android, if text ends with expected or equals expected, or if actualBefore is empty (common in WebView), it is NOT desynced
+        if (actualBeforeNfc.isEmpty() || actualBeforeNfc == expectedNfc || actualBeforeNfc.endsWith(expectedNfc)) {
             return false
         }
 
-        if (System.currentTimeMillis() - lastKeyPressTime < 300) {
-            return false
-        }
-
-        return true
+        return false
     }
 
     private fun isVietnameseComposingKey(key: String): Boolean {
@@ -222,11 +290,6 @@ class ImeInputConnectionController(
         if (key.length != 1) return false
         val char = key[0]
         if (char in 'a'..'z' || char in 'A'..'Z' || char.lowercaseChar() != char.uppercaseChar()) return true
-        
-        // In VNI, digits 0-9 are accent/diacritic inputs
-        if (inputEngine.inputMethod == GoVietInputMethod.GoVietVni && char in '0'..'9') {
-            return true
-        }
         
         // In Telex, brackets [ and ] and shifted variants { and } are shortcut inputs for ư and ơ
         if (inputEngine.inputMethod == GoVietInputMethod.GoVietTelex && 
@@ -258,6 +321,8 @@ class ImeInputConnectionController(
         composingRaw.clear()
         activeComposingShiftState = 0
         lastSetComposingText = null
+        imeUndoStack.clear()
+        inputEngine.reset()
         if (isImmediateCommitMode()) {
             if (backspaceCountIfImmediate > 0) {
                 sendBackspaceEvents(ic, backspaceCountIfImmediate)
@@ -342,8 +407,144 @@ class ImeInputConnectionController(
         }
     }
 
+    private fun isModifierKeyAction(
+        lastChar: Char,
+        rawWithoutLast: String,
+        currentDisplay: String,
+        displayWithoutLast: String
+    ): Boolean {
+        val lower = lastChar.lowercaseChar()
+        // 1. Telex tone keys: s, f, r, x, j
+        if (lower == 's' || lower == 'f' || lower == 'r' || lower == 'x' || lower == 'j') {
+            return true
+        }
+        // 2. Vowel/Consonant transform keys that don't increase display word length (e.g. e->ê, a->â, o->ô, d->đ, w->ư/ơ/ă)
+        if (currentDisplay.length == displayWithoutLast.length && currentDisplay != displayWithoutLast) {
+            return true
+        }
+        // 3. 'w' transform key modifying an existing vowel
+        if (lower == 'w' && (currentDisplay.contains('ư') || currentDisplay.contains('ơ') || currentDisplay.contains('ă') ||
+                             currentDisplay.contains('Ư') || currentDisplay.contains('Ơ') || currentDisplay.contains('Ă'))) {
+            if (!displayWithoutLast.contains('ư') && !displayWithoutLast.contains('ơ') && !displayWithoutLast.contains('ă') &&
+                !displayWithoutLast.contains('Ư') && !displayWithoutLast.contains('Ơ') && !displayWithoutLast.contains('Ă')) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun performSmartBackspace(ic: InputConnection) {
+        if (composingRaw.isEmpty()) {
+            resetComposingUI(ic, 0)
+            return
+        }
+
+        if (imeUndoStack.isNotEmpty()) {
+            imeUndoStack.removeLast() // pop current state before backspacing
+        }
+
+        if (imeUndoStack.isNotEmpty()) {
+            val prev = imeUndoStack.last()
+            composingRaw.clear()
+            composingRaw.append(prev.composingRaw)
+            composingCursorIndex = prev.composingCursorIndex
+            activeComposingShiftState = prev.shiftState
+            val restoredDisplay = prev.displayText
+
+            inputEngine.backspace()
+
+            if (isImmediateCommitMode()) {
+                val lastStr = lastSetComposingText ?: ""
+                if (lastStr.isNotEmpty() && restoredDisplay == lastStr.substring(0, lastStr.length - 1)) {
+                    sendBackspaceEvents(ic, 1)
+                } else {
+                    val lenToDelete = lastStr.length
+                    if (lenToDelete > 0) {
+                        sendBackspaceEvents(ic, lenToDelete)
+                    }
+                    ic.commitText(restoredDisplay, 1)
+                }
+            } else {
+                ic.setComposingText(restoredDisplay, 1)
+            }
+            lastSetComposingText = restoredDisplay
+            return
+        }
+
+        // Safety fallback: if imeUndoStack is empty but composingRaw still has > 1 chars, delete one by one
+        if (composingRaw.length > 1) {
+            composingRaw.deleteAt(composingRaw.length - 1)
+            composingCursorIndex = composingRaw.length
+            val compiled = compileComposingText()
+            if (isImmediateCommitMode()) {
+                val lastStr = lastSetComposingText ?: ""
+                val lenToDelete = lastStr.length
+                if (lenToDelete > 0) sendBackspaceEvents(ic, lenToDelete)
+                ic.commitText(compiled, 1)
+            } else {
+                ic.setComposingText(compiled, 1)
+            }
+            lastSetComposingText = compiled
+            return
+        }
+
+        val lastLen = lastSetComposingText?.length ?: 0
+        resetComposingUI(ic, lastLen)
+    }
+
+    private fun handleBackspace(ic: InputConnection) {
+        val hasSelection = (cachedSelStart != cachedSelEnd) || isSelecting
+        if (hasSelection) {
+            clearComposingAndSendDelKey(ic)
+        } else if (composingRaw.isNotEmpty()) {
+            if (isComposingStateDesynced(ic)) {
+                clearComposingAndSendDelKey(ic)
+                return
+            }
+            performSmartBackspace(ic)
+        } else {
+            val beforeText = ic.getTextBeforeCursor(50, 0)
+            if (beforeText != null && beforeText.isNotEmpty() && isVietnameseWordChar(beforeText.last())) {
+                val adopted = adoptWordAtCursor(ic)
+                if (adopted && composingRaw.isNotEmpty()) {
+                    performSmartBackspace(ic)
+                } else {
+                    sendDelKey(ic)
+                }
+            } else {
+                sendDelKey(ic)
+            }
+        }
+        service.evaluateAutoShift()
+    }
+
+    private fun handleDeleteWord(ic: InputConnection) {
+        if (composingRaw.isNotEmpty() && isComposingStateDesynced(ic)) {
+            ic.finishComposingText()
+            clearState()
+        }
+        if (composingRaw.isNotEmpty()) {
+            val lastLen = lastSetComposingText?.length ?: 0
+            resetComposingUI(ic, lastLen)
+        } else {
+            val beforeText = ic.getTextBeforeCursor(100, 0) ?: ""
+            if (beforeText.isNotEmpty()) {
+                val trimmed = beforeText.toString().trimEnd()
+                val lastSpaceIndex = trimmed.lastIndexOf(' ')
+                val charsToDelete = beforeText.length - (if (lastSpaceIndex == -1) 0 else lastSpaceIndex)
+                if (isImmediateCommitMode()) {
+                    sendBackspaceEvents(ic, charsToDelete)
+                } else {
+                    ic.deleteSurroundingText(charsToDelete, 0)
+                }
+            } else {
+                deleteLastGraphemeOrChar(ic)
+            }
+        }
+        service.evaluateAutoShift()
+    }
+
     private fun handleSeparator(ic: InputConnection, separator: String) {
-        ic.beginBatchEdit()
         if (composingRaw.isNotEmpty()) {
             commitAndReset(wordBreak = separator)
         } else {
@@ -353,7 +554,6 @@ class ImeInputConnectionController(
         if (separator != " ") {
             recordImeCommit(separator)
         }
-        ic.endBatchEdit()
         service.evaluateAutoShift()
     }
 
@@ -361,166 +561,110 @@ class ImeInputConnectionController(
         lastKeyPressTime = System.currentTimeMillis()
         val ic: InputConnection? = service.currentInputConnection
         if (ic == null) {
-            Log.e(TAG, "handleKeyPress() FAILED - currentInputConnection is NULL")
             return
         }
 
-        when (key) {
-            "BACKSPACE" -> {
-                val selected = ic.getSelectedText(0)
-                val hasSelection = (selected != null && selected.isNotEmpty()) || (service.currentSelStart != service.currentSelEnd)
-                if (hasSelection) {
-                    clearComposingAndSendDelKey(ic)
-                } else if (composingRaw.isNotEmpty()) {
-                    if (isComposingStateDesynced(ic)) {
-                        clearComposingAndSendDelKey(ic)
-                        return
-                    }
-                    val lastLen = lastSetComposingText?.length ?: 0
-                    performBackspaceOnComposingRaw()
-                    if (composingRaw.isEmpty()) {
-                        resetComposingUI(ic, lastLen)
-                    } else {
-                        updateComposingUI(ic, lastLen)
-                    }
-                } else {
-                    ic.beginBatchEdit()
-                    val beforeText = ic.getTextBeforeCursor(4, 0)
-                    if (beforeText != null && beforeText.isNotEmpty() && isVietnameseWordChar(beforeText.last())) {
-                        val adopted = adoptWordAtCursor(ic)
-                        if (adopted && composingRaw.isNotEmpty()) {
-                            performBackspaceOnComposingRaw()
-                            if (composingRaw.isEmpty()) {
-                                resetComposingUI(ic, 1)
-                            } else {
-                                updateComposingUI(ic, 0)
-                            }
-                        } else {
-                            sendDelKey(ic)
-                        }
-                    } else {
-                        sendDelKey(ic)
-                    }
-                    ic.endBatchEdit()
-                }
-                service.evaluateAutoShift()
-            }
-            "DELETE_WORD" -> {
-                if (composingRaw.isNotEmpty() && isComposingStateDesynced(ic)) {
-                    ic.finishComposingText()
-                    clearState()
-                }
-                if (composingRaw.isNotEmpty()) {
-                    val lastLen = lastSetComposingText?.length ?: 0
-                    resetComposingUI(ic, lastLen)
-                } else {
-                    ic.beginBatchEdit()
-                    val beforeText = ic.getTextBeforeCursor(100, 0) ?: ""
-                    if (beforeText.isNotEmpty()) {
-                        val trimmed = beforeText.toString().trimEnd()
-                        val lastSpaceIndex = trimmed.lastIndexOf(' ')
-                        val charsToDelete = beforeText.length - (if (lastSpaceIndex == -1) 0 else lastSpaceIndex)
-                        if (isImmediateCommitMode()) {
-                            sendBackspaceEvents(ic, charsToDelete)
-                        } else {
-                            ic.deleteSurroundingText(charsToDelete, 0)
-                        }
-                    } else {
-                        deleteLastGraphemeOrChar(ic)
-                    }
-                    ic.endBatchEdit()
-                }
-                service.evaluateAutoShift()
-            }
-            "," -> handleSeparator(ic, ",")
-            "." -> handleSeparator(ic, ".")
-            "SPACE" -> handleSeparator(ic, " ")
-            "ENTER" -> {
-                ic.beginBatchEdit()
-                commitAndReset()
-                val editorInfo = service.currentInputEditorInfo
-                val inputType = editorInfo?.inputType ?: 0
-                val isMultiLine = (inputType and android.text.InputType.TYPE_MASK_CLASS) == android.text.InputType.TYPE_CLASS_TEXT &&
-                        ((inputType and android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE) != 0 ||
-                         (inputType and android.text.InputType.TYPE_TEXT_FLAG_IME_MULTI_LINE) != 0)
-                val imeOptions = editorInfo?.imeOptions ?: 0
-                val actionMasked = imeOptions and android.view.inputmethod.EditorInfo.IME_MASK_ACTION
-                val hasNoEnterAction = (imeOptions and android.view.inputmethod.EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0
-
-                if (!isMultiLine && !hasNoEnterAction && actionMasked != android.view.inputmethod.EditorInfo.IME_ACTION_NONE && actionMasked != android.view.inputmethod.EditorInfo.IME_ACTION_UNSPECIFIED) {
-                    ic.performEditorAction(actionMasked)
-                } else if (!isMultiLine && !hasNoEnterAction && editorInfo?.actionId != 0 && editorInfo?.actionId != null) {
-                    ic.performEditorAction(editorInfo.actionId)
-                } else {
-                    sendKeyEvent(ic, KeyEvent.KEYCODE_ENTER)
-                }
-                ic.endBatchEdit()
-                service.evaluateAutoShift()
-            }
-            "PASTE_OTP" -> {
-                val clipboard = service.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                val primaryClip = clipboard.primaryClip
-                if (primaryClip != null && primaryClip.itemCount > 0) {
-                    val text = primaryClip.getItemAt(0).text?.toString() ?: ""
-                    val otpRegex = "\\d{4,8}".toRegex()
-                    val match = otpRegex.find(text)
-                    val otp = match?.value ?: text.filter { it.isDigit() }.take(6)
-                    if (otp.isNotEmpty()) {
-                        ic.commitText(otp, 1)
-                    }
-                }
-            }
-            "SHIFT" -> {
-                val now = System.currentTimeMillis()
-                lastShiftTime = service.shiftController.toggleShiftKey(now, lastShiftTime)
-            }
-            "SHIFT_LONG" -> {
-                service.shiftController.forceCapsLock()
-            }
-            else -> {
-                val actualKey = if (service.shiftController.isShifted && key.length == 1 && key[0].isLetter()) {
-                    key.uppercase()
-                } else {
-                    key
-                }
-                if (!isVietnameseComposingKey(key)) {
-                    ic.beginBatchEdit()
+        ic.beginBatchEdit()
+        try {
+            when (key) {
+                "BACKSPACE" -> handleBackspace(ic)
+                "DELETE_WORD" -> handleDeleteWord(ic)
+                "," -> handleSeparator(ic, ",")
+                "." -> handleSeparator(ic, ".")
+                "SPACE" -> handleSeparator(ic, " ")
+                "ENTER" -> {
                     commitAndReset()
-                    ic.commitText(actualKey, 1)
-                    service.lastCommittedWord = actualKey
-                    service.shiftController.consumeSingleShift()
-                    ic.endBatchEdit()
-                } else {
-                    ic.beginBatchEdit()
-                    if (composingRaw.isNotEmpty() && isComposingStateDesynced(ic)) {
-                        ic.finishComposingText()
-                        clearState()
+                    val editorInfo = service.currentInputEditorInfo
+                    val inputType = editorInfo?.inputType ?: 0
+                    val isMultiLine = (inputType and android.text.InputType.TYPE_MASK_CLASS) == android.text.InputType.TYPE_CLASS_TEXT &&
+                            ((inputType and android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE) != 0 ||
+                             (inputType and android.text.InputType.TYPE_TEXT_FLAG_IME_MULTI_LINE) != 0)
+                    val imeOptions = editorInfo?.imeOptions ?: 0
+                    val actionMasked = imeOptions and android.view.inputmethod.EditorInfo.IME_MASK_ACTION
+                    val hasNoEnterAction = (imeOptions and android.view.inputmethod.EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0
+
+                    if (!isMultiLine && !hasNoEnterAction && actionMasked != android.view.inputmethod.EditorInfo.IME_ACTION_NONE && actionMasked != android.view.inputmethod.EditorInfo.IME_ACTION_UNSPECIFIED) {
+                        ic.performEditorAction(actionMasked)
+                    } else if (!isMultiLine && !hasNoEnterAction && editorInfo?.actionId != 0 && editorInfo?.actionId != null) {
+                        ic.performEditorAction(editorInfo.actionId)
+                    } else {
+                        sendKeyEvent(ic, KeyEvent.KEYCODE_ENTER)
                     }
-                    if (composingRaw.isEmpty()) {
-                        val adopted = adoptWordAtCursor(ic)
-                        if (!adopted) {
-                            val fresh = getFreshCursorPosition(ic)
-                            val currentSel = fresh?.first ?: service.currentSelStart
-                            composingStartInEditor = if (currentSel >= 0) currentSel else -1
-                            composingCursorIndex = 0
+                    service.evaluateAutoShift()
+                }
+                "PASTE_OTP" -> {
+                    val clipboard = service.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    val primaryClip = clipboard.primaryClip
+                    if (primaryClip != null && primaryClip.itemCount > 0) {
+                        val text = primaryClip.getItemAt(0).text?.toString() ?: ""
+                        val otpRegex = "\\d{4,8}".toRegex()
+                        val match = otpRegex.find(text)
+                        val otp = match?.value ?: text.filter { it.isDigit() }.take(6)
+                        if (otp.isNotEmpty()) {
+                            ic.commitText(otp, 1)
                         }
                     }
-                    if (composingRaw.isEmpty()) {
-                        activeComposingShiftState = service.shiftController.value
+                }
+                "SHIFT" -> {
+                    val now = System.currentTimeMillis()
+                    lastShiftTime = service.shiftController.toggleShiftKey(now, lastShiftTime)
+                }
+                "SHIFT_LONG" -> {
+                    service.shiftController.forceCapsLock()
+                }
+                else -> {
+                    val actualKey = if (service.shiftController.isShifted && key.length == 1 && key[0].isLetter()) {
+                        key.uppercase()
+                    } else {
+                        key
                     }
-                    val lastLen = lastSetComposingText?.length ?: 0
-                    composingRaw.insert(composingCursorIndex, actualKey)
-                    composingCursorIndex += actualKey.length
+                    if (!isVietnameseComposingKey(key)) {
+                        commitAndReset()
+                        ic.commitText(actualKey, 1)
+                        service.lastCommittedWord = actualKey
+                        service.shiftController.consumeSingleShift()
+                    } else {
+                        if (composingRaw.isNotEmpty() && isComposingStateDesynced(ic)) {
+                            ic.finishComposingText()
+                            clearState()
+                        }
+                        if (composingRaw.isEmpty()) {
+                            val adopted = adoptWordAtCursor(ic)
+                            if (!adopted) {
+                                val fresh = getFreshCursorPosition(ic)
+                                val currentSel = fresh.first
+                                composingStartInEditor = if (currentSel >= 0) currentSel else -1
+                                composingCursorIndex = 0
+                            }
+                        }
+                        if (composingRaw.isEmpty()) {
+                            activeComposingShiftState = service.shiftController.value
+                        }
+                        val lastLen = lastSetComposingText?.length ?: 0
+                        composingRaw.insert(composingCursorIndex, actualKey)
+                        composingCursorIndex += actualKey.length
 
-                    updateComposingUI(ic, lastLen)
-                    if (isImmediateCommitMode()) {
-                        val compiled = lastSetComposingText ?: ""
-                        recordImeCommit(compiled)
+                        updateComposingUI(ic, lastLen)
+
+                        val currentCompiled = lastSetComposingText ?: ""
+                        imeUndoStack.addLast(
+                            ImeSnapshot(
+                                composingRaw = composingRaw.toString(),
+                                composingCursorIndex = composingCursorIndex,
+                                displayText = currentCompiled,
+                                shiftState = activeComposingShiftState
+                            )
+                        )
+
+                        if (isImmediateCommitMode()) {
+                            recordImeCommit(currentCompiled)
+                        }
+                        service.shiftController.consumeSingleShift()
                     }
-                    service.shiftController.consumeSingleShift()
-                    ic.endBatchEdit()
                 }
             }
+        } finally {
+            ic.endBatchEdit()
         }
     }
 
@@ -591,14 +735,14 @@ class ImeInputConnectionController(
         val store = inputEngine.macroStore ?: return null
         if (store.isEmpty()) return null
 
-        // Case 1: trigger không dấu, phổ biến nhất (vd "rs" -> "RoSino18k")
+        // Case 1: unaccented trigger (e.g. "rs" -> "RoSino18k")
         store.lookup(raw.lowercase())?.let { expansion ->
             return applyMacroCase(expansion, raw) + wordBreak
         }
 
-        // Case 2: trigger có dấu tiếng Việt — chỉ áp dụng khi bật "GÕ TẮT VIỆT" (alwaysMacro)
+        // Case 2: accented Vietnamese trigger — only applied when alwaysMacro is true
         if (inputEngine.alwaysMacro) {
-            val composed = compileText(raw)   // KHÔNG kèm wordBreak — an toàn, không đụng processWordBoundary
+            val composed = compileText(raw)   // without wordBreak
             if (composed != raw) {
                 store.lookup(composed.lowercase())?.let { expansion ->
                     return applyMacroCase(expansion, composed) + wordBreak
@@ -615,11 +759,6 @@ class ImeInputConnectionController(
         if (composingRaw.isNotEmpty()) {
             val ic = service.currentInputConnection
             if (ic != null) {
-                if (isComposingStateDesynced(ic)) {
-                    ic.finishComposingText()
-                    clearState()
-                    return
-                }
                 val raw = composingRaw.toString()
                 val outputText = tryExpandMacro(raw, wordBreak)
                     ?: (compileText(raw) + wordBreak)
