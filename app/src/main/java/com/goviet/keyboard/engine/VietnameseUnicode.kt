@@ -69,7 +69,7 @@ object VietnameseUnicode {
         vowels: List<Char>,
         coda: String,
         onset: String,
-        modernStyle: Boolean = true
+        oldTonePlacement: Boolean = false
     ): Int {
         if (vowels.isEmpty()) return -1
         if (vowels.size == 1) return 0
@@ -131,9 +131,15 @@ object VietnameseUnicode {
                 return 1
             }
 
+            if (oldTonePlacement) {
+                if (vStrLower == "oa" || vStrLower == "oe" || vStrLower == "uy") {
+                    return 0
+                }
+            }
+
             // Open rimes without coda (oa, oe, uy, uơ)
             if (vStrLower == "oa" || vStrLower == "oe" || vStrLower == "uy" || vStrLower == "uơ") {
-                return if (modernStyle) 1 else 0
+                return 1
             }
 
             // Other open rimes: ai, ao, au, ay, âu, ây, eo, êu, oi, ôi, ơi, ui, ưi, ưu

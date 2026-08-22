@@ -73,8 +73,13 @@ object TonePositionMap {
         "iê" to 1,
         "iêu" to 1,
         "oa" to 1,
+        "oă" to 1,
         "oc" to 0,
         "oe" to 1,
+        "oec" to 1,
+        "oen" to 1,
+        "oep" to 1,
+        "oet" to 1,
         "oi" to 0,
         "om" to 0,
         "on" to 0,
@@ -82,6 +87,7 @@ object TonePositionMap {
         "op" to 0,
         "ot" to 0,
         "ua" to 0,
+        "uâ" to 1,
         "uc" to 0,
         "ue" to 1,
         "ui" to 0,
@@ -192,6 +198,7 @@ object TonePositionMap {
         "uou" to 1,
         "uya" to 1,
         "uyn" to 1,
+        "uyp" to 1,
         "uyt" to 1,
         "uyu" to 1,
         "uyê" to 1,
@@ -272,7 +279,7 @@ object TonePositionMap {
     /**
      * Determine tone mark index within rime after preprocessing qu/gi onset.
      */
-    fun findTonePosition(onset: String, rime: String): Int? {
+    fun findTonePosition(onset: String, rime: String, oldTonePlacement: Boolean = false): Int? {
         val onsetLower = onset.lowercase()
         var effectiveRime = rime.lowercase()
         var offset = 0
@@ -286,6 +293,14 @@ object TonePositionMap {
             // gi + i + following vowel -> strip i
             effectiveRime = effectiveRime.substring(1)
             offset = 1
+        }
+
+        if (oldTonePlacement) {
+            when (effectiveRime) {
+                "oa" -> return 0 + offset
+                "oe" -> return 0 + offset
+                "uy" -> return 0 + offset
+            }
         }
 
         val idx = TONE_POSITION_MAP[effectiveRime] ?: return null

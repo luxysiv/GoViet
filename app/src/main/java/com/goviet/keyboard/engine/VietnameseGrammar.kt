@@ -52,15 +52,15 @@ object VietnameseGrammar {
 
         // --- Coda -p ---
         "ap", "ăp", "âp", "ep", "êp", "ip", "op", "ôp", "ơp", "up", "ưp",
-        "oap", "oăp", "uâp", "uôp", "iêp", "ươp",
+        "oap", "oăp", "oep", "uâp", "uôp", "iêp", "ươp", "uyp",
 
         // --- Coda -n ---
         "an", "ăn", "ân", "en", "ên", "in", "on", "ôn", "ơn", "un", "ưn", "yn",
-        "oan", "oăn", "uân", "uên", "uôn", "iên", "yên", "ươn", "uyn", "uyên",
+        "oan", "oăn", "oen", "uân", "uên", "uôn", "iên", "yên", "ươn", "uyn", "uyên",
 
         // --- Coda -t ---
         "at", "ăt", "ât", "et", "êt", "it", "ot", "ôt", "ơt", "ut", "ưt", "yt",
-        "oat", "oăt", "uât", "uêt", "uôt", "iêt", "yêt", "ươt", "uyt", "uyêt",
+        "oat", "oăt", "oet", "uât", "uêt", "uôt", "iêt", "yêt", "ươt", "uyt", "uyêt",
 
         // --- Coda -ng ---
         "ang", "ăng", "âng", "eng", "oeng", "ong", "ông", "ung", "ưng",
@@ -68,7 +68,7 @@ object VietnameseGrammar {
 
         // --- Coda -c ---
         "ac", "ăc", "âc", "ec", "oc", "ôc", "uc", "ưc",
-        "oac", "oăc", "uâc", "uôc", "iêc", "ươc", "ooc", "uơc", "êc",
+        "oac", "oăc", "oec", "uâc", "uôc", "iêc", "ươc", "ooc", "uơc", "êc",
 
         // --- Coda -nh ---
         "anh", "ênh", "inh", "ynh", "oanh", "uynh", "uênh",

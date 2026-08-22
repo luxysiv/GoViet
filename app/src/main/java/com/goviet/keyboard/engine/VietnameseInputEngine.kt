@@ -13,11 +13,6 @@ class VietnameseInputEngine {
 
     var vietnameseModeEnabled: Boolean = true
     var options: EngineOptions = EngineOptions()
-    var inputMethod: GoVietInputMethod = GoVietInputMethod.GoVietTelex
-
-    var modernStyle: Boolean
-        get() = options.modernStyle
-        set(v) { options.modernStyle = v }
 
     var macroEnabled: Boolean
         get() = options.macroEnabled
@@ -26,6 +21,14 @@ class VietnameseInputEngine {
     var alwaysMacro: Boolean
         get() = options.alwaysMacro
         set(v) { options.alwaysMacro = v }
+
+    var directW: Boolean
+        get() = options.directW
+        set(v) { options.directW = v }
+
+    var oldTonePlacement: Boolean
+        get() = options.oldTonePlacement
+        set(v) { options.oldTonePlacement = v }
 
     var autoCapitalize: Boolean = false
 
@@ -42,7 +45,6 @@ class VietnameseInputEngine {
         if (!vietnameseModeEnabled) {
             return EngineResult(text = key.toString(), consumed = true, composing = false)
         }
-        options.simpleTelexEnabled = (inputMethod == GoVietInputMethod.GoVietSimpleTelex)
         composer.options = options
         return composer.process(key)
     }
@@ -52,7 +54,6 @@ class VietnameseInputEngine {
      */
     fun process(raw: String): String {
         if (!vietnameseModeEnabled) return raw
-        options.simpleTelexEnabled = (inputMethod == GoVietInputMethod.GoVietSimpleTelex)
         composer.options = options
         return composer.processString(raw)
     }
@@ -69,7 +70,6 @@ class VietnameseInputEngine {
      */
     fun reDerive(raw: String): String {
         if (!vietnameseModeEnabled) return raw
-        options.simpleTelexEnabled = (inputMethod == GoVietInputMethod.GoVietSimpleTelex)
         composer.options = options
         return composer.reDerive(raw)
     }
@@ -93,11 +93,11 @@ class VietnameseInputEngine {
             AppPreferences.init(context)
             val config = AppPreferences.getEngineConfig()
             
-            inputMethod = GoVietInputMethod.fromInt(config.inputMethod)
-            modernStyle = config.modernStyle
             macroEnabled = config.macroEnabled
             alwaysMacro = config.alwaysMacro
             autoCapitalize = config.autoCapitalize
+            directW = config.directW
+            oldTonePlacement = config.oldTonePlacement
             
             macroStore = MacroRepository(context).loadMacroStore()
             if (macroPrefsListener == null) {
@@ -148,49 +148,31 @@ class VietnameseInputEngine {
 
     fun savePreferences(
         context: Context,
-        method: GoVietInputMethod = inputMethod,
-        modern: Boolean = modernStyle,
         macro: Boolean = macroEnabled,
         alwaysMac: Boolean = alwaysMacro,
-        autoCap: Boolean = autoCapitalize
+        autoCap: Boolean = autoCapitalize,
+        dirW: Boolean = directW,
+        oldTone: Boolean = oldTonePlacement
     ) {
         try {
             AppPreferences.init(context)
             val config = EngineConfig(
-                inputMethod = method.ordinal,
-                modernStyle = modern,
                 macroEnabled = macro,
                 alwaysMacro = alwaysMac,
-                autoCapitalize = autoCap
+                autoCapitalize = autoCap,
+                directW = dirW,
+                oldTonePlacement = oldTone
             )
             AppPreferences.setEngineConfig(config)
             
-            inputMethod = method
-            modernStyle = modern
             macroEnabled = macro
             alwaysMacro = alwaysMac
             autoCapitalize = autoCap
+            directW = dirW
+            oldTonePlacement = oldTone
         } catch (e: Exception) {
             System.err.println("[VietnameseInputEngine] Failed to save preferences: ${e.message}")
         }
-    }
-
-    fun savePreferences(
-        context: Context,
-        method: Int,
-        modern: Boolean = modernStyle,
-        macro: Boolean = macroEnabled,
-        alwaysMac: Boolean = alwaysMacro,
-        autoCap: Boolean = autoCapitalize
-    ) {
-        savePreferences(
-            context,
-            GoVietInputMethod.fromInt(method),
-            modern,
-            macro,
-            alwaysMac,
-            autoCap
-        )
     }
 }
 

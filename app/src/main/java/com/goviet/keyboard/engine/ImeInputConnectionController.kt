@@ -114,8 +114,9 @@ class ImeInputConnectionController(
         inputEngine.reset()
     }
 
-    private fun isVietnameseWordChar(c: Char): Boolean {
-        if (c.isLetter() || c.isDigit()) return true
+    private fun isVietnameseLetterChar(c: Char): Boolean {
+        if (c.isDigit()) return false
+        if (c.isLetter()) return true
         val type = Character.getType(c)
         return type == Character.NON_SPACING_MARK.toInt() ||
                 type == Character.COMBINING_SPACING_MARK.toInt() ||
@@ -143,28 +144,36 @@ class ImeInputConnectionController(
         val before = beforeText.toString()
         val after = afterText.toString()
 
-        val hasLetterBefore = before.isNotEmpty() && isVietnameseWordChar(before.last())
-        val hasLetterAfter = after.isNotEmpty() && isVietnameseWordChar(after.first())
+        val hasLetterBefore = before.isNotEmpty() && isVietnameseLetterChar(before.last())
+        val hasLetterAfter = after.isNotEmpty() && isVietnameseLetterChar(after.first())
 
         if (!hasLetterBefore) {
             return false
         }
 
         var i = before.length - 1
-        while (i >= 0 && isVietnameseWordChar(before[i])) {
+        while (i >= 0 && isVietnameseLetterChar(before[i])) {
             i--
         }
         val wordBeforeRaw = before.substring(i + 1)
 
         var j = 0
-        while (j < after.length && isVietnameseWordChar(after[j])) {
+        while (j < after.length && isVietnameseLetterChar(after[j])) {
             j++
         }
         val wordAfterRaw = after.substring(0, j)
 
+        if (wordBeforeRaw.isEmpty()) {
+            return false
+        }
+
         val wordBeforeNfc = java.text.Normalizer.normalize(wordBeforeRaw, java.text.Normalizer.Form.NFC)
         val wordAfterNfc = java.text.Normalizer.normalize(wordAfterRaw, java.text.Normalizer.Form.NFC)
         val fullWordNfc = wordBeforeNfc + wordAfterNfc
+
+        if (!fullWordNfc.all { isVietnameseLetterChar(it) }) {
+            return false
+        }
 
         val commit = lastImeCommit
         val isRecentImeCommit = commit != null &&
@@ -173,7 +182,7 @@ class ImeInputConnectionController(
 
         // Allow adopting the word if cursor is directly after a Vietnamese word (user presses backspace or types a modifier)
         // or when there are letters after cursor (touching inside a word to edit).
-        val shouldAdopt = hasLetterAfter || isRecentImeCommit || (before.isNotEmpty() && isVietnameseWordChar(before.last()))
+        val shouldAdopt = hasLetterAfter || isRecentImeCommit || (before.isNotEmpty() && isVietnameseLetterChar(before.last()))
 
         if (!shouldAdopt) {
             return false
@@ -292,8 +301,7 @@ class ImeInputConnectionController(
         if (char in 'a'..'z' || char in 'A'..'Z' || char.lowercaseChar() != char.uppercaseChar()) return true
         
         // In Telex, brackets [ and ] and shifted variants { and } are shortcut inputs for ư and ơ
-        if (inputEngine.inputMethod == GoVietInputMethod.GoVietTelex && 
-            (char == '[' || char == ']' || char == '{' || char == '}')) {
+        if (char == '[' || char == ']' || char == '{' || char == '}') {
             return true
         }
         
@@ -504,7 +512,7 @@ class ImeInputConnectionController(
             performSmartBackspace(ic)
         } else {
             val beforeText = ic.getTextBeforeCursor(50, 0)
-            if (beforeText != null && beforeText.isNotEmpty() && isVietnameseWordChar(beforeText.last())) {
+            if (beforeText != null && beforeText.isNotEmpty() && isVietnameseLetterChar(beforeText.last())) {
                 val adopted = adoptWordAtCursor(ic)
                 if (adopted && composingRaw.isNotEmpty()) {
                     performSmartBackspace(ic)

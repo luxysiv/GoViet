@@ -60,14 +60,14 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
             return s.any { it in listOf('â', 'ă', 'ê', 'ô', 'ơ', 'ư', 'đ') }
         }
 
-        fun toDisplayString(): String {
+        fun toDisplayString(oldTonePlacement: Boolean = false): String {
             if (isEmpty()) return ""
             val rime = nucleus + coda
             if (tone == Tone.NONE || nucleus.isEmpty()) {
                 return onset + nucleus + coda + rawSuffix
             }
 
-            val pos = TonePositionMap.findTonePosition(onset, rime)
+            val pos = TonePositionMap.findTonePosition(onset, rime, oldTonePlacement)
             val tonedNucleus = if (pos != null && pos in 0 until nucleus.length) {
                 val targetChar = nucleus[pos]
                 val tonedChar = TonePositionMap.applyToneToChar(targetChar, tone)
@@ -105,14 +105,14 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
      */
     fun process(c: Char): EngineResult {
         if (c.isWhitespace() || isSeparator(c)) {
-            val committed = currentSyllable.toDisplayString() + c
+            val committed = currentSyllable.toDisplayString(options.oldTonePlacement) + c
             reset()
             return EngineResult(text = committed, consumed = true, composing = false)
         }
 
         keyHistory.add(c)
         val success = applyKey(currentSyllable, c, isStaticReDerive = false)
-        val displayText = currentSyllable.toDisplayString()
+        val displayText = currentSyllable.toDisplayString(options.oldTonePlacement)
         undoStack.addLast(ComposerSnapshot(c, currentSyllable.copy(), displayText))
         return EngineResult(text = displayText, consumed = success, composing = true)
     }
@@ -151,14 +151,14 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
 
         for (c in raw) {
             if (c.isWhitespace() || isSeparator(c)) {
-                sb.append(tempSyllable.toDisplayString())
+                sb.append(tempSyllable.toDisplayString(options.oldTonePlacement))
                 sb.append(c)
                 tempSyllable.reset()
             } else {
                 applyKey(tempSyllable, c, isStaticReDerive = false)
             }
         }
-        sb.append(tempSyllable.toDisplayString())
+        sb.append(tempSyllable.toDisplayString(options.oldTonePlacement))
         return sb.toString()
     }
 
@@ -193,7 +193,7 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
         for (c in word) {
             applyKey(tempSyllable, c, isStaticReDerive = true)
         }
-        val result = tempSyllable.toDisplayString()
+        val result = tempSyllable.toDisplayString(options.oldTonePlacement)
         return GoVietCharUtils.applyCasingFromRaw(result, word)
     }
 
@@ -429,8 +429,18 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
     }
 
     private fun handleKeyW(state: SyllableState, isUpper: Boolean): Boolean {
-        // Empty nucleus case: 'w' acts as standalone vowel 'ư'
+        // Empty nucleus case: 'w' acts as standalone vowel 'ư' or literal 'w' when directW is enabled
         if (state.nucleus.isEmpty()) {
+            if (options.directW) {
+                val wChar = if (isUpper) "W" else "w"
+                if (state.onset.isEmpty()) {
+                    state.onset = wChar
+                } else {
+                    state.rawSuffix += wChar
+                }
+                state.lastToggle = null
+                return true
+            }
             val uChar = if (isUpper) 'Ư' else 'ư'
             state.nucleus = uChar.toString()
             state.lastToggle = LastToggle(key = 'w', targetType = TargetType.W_SOLO, hadCharsAfter = false)

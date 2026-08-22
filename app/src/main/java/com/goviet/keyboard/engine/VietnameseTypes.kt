@@ -91,28 +91,11 @@ data class EngineResult(
  * Engine configuration options.
  */
 data class EngineOptions(
-    var modernStyle: Boolean = true,
     var macroEnabled: Boolean = false,
     var alwaysMacro: Boolean = false,
-    var simpleTelexEnabled: Boolean = false
+    var directW: Boolean = false,
+    var oldTonePlacement: Boolean = false
 )
-
-/**
- * Supported Vietnamese input methods.
- */
-enum class GoVietInputMethod(val id: Int) {
-    GoVietTelex(0),
-    GoVietSimpleTelex(1);
-
-    companion object {
-        fun fromInt(value: Int): GoVietInputMethod = when (value) {
-            0 -> GoVietTelex
-            1 -> GoVietTelex // Fallback previous VNI (1) to Telex
-            2, 3, 5, 6 -> GoVietSimpleTelex
-            else -> GoVietTelex
-        }
-    }
-}
 
 // Alias for backward compatibility if needed
 typealias GoVietOptions = EngineOptions
