@@ -89,4 +89,104 @@ object VietnameseUnicode {
         return if (changed) String(chars) else word
     }
 
+
+    // ==========================================
+    // CASING & NFC UTILITIES (merged from VietnameseCharUtils)
+    // ==========================================
+
+    private val caseBuffer = ThreadLocal.withInitial { CharArray(32) }
+
+    private fun ensureBuffer(size: Int): CharArray {
+        val current = caseBuffer.get() ?: return CharArray(size.coerceAtLeast(64))
+        return if (current.size >= size) current else {
+            val grown = CharArray(size.coerceAtLeast(64))
+            caseBuffer.set(grown)
+            grown
+        }
+    }
+
+    fun normalizeNfc(text: String): String {
+        if (text.isEmpty()) return text
+        return java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFC)
+    }
+
+    fun getBaseChar(c: Char): Char {
+        return stripDiacritics(stripTone(c)).lowercaseChar()
+    }
+
+    fun applyCasingFromRaw(compiled: String, raw: String): String {
+        if (compiled.isEmpty() || raw.isEmpty()) return normalizeNfc(compiled)
+
+        var hasUpperInRaw = false
+        var isAllUpper = true
+        val rawLen = raw.length
+        for (i in 0 until rawLen) {
+            val c = raw[i]
+            val isLtr = c in 'a'..'z' || c in 'A'..'Z' || c.lowercaseChar() != c.uppercaseChar()
+            if (isLtr) {
+                if (c.isUpperCase()) {
+                    hasUpperInRaw = true
+                } else {
+                    isAllUpper = false
+                }
+            }
+        }
+
+        val compiledLen = compiled.length
+        val buf = ensureBuffer(compiledLen)
+        var offset = 0
+
+        if (!hasUpperInRaw) {
+            for (i in 0 until compiledLen) {
+                buf[offset++] = compiled[i].lowercaseChar()
+            }
+            return normalizeNfc(String(buf, 0, offset))
+        }
+
+        if (isAllUpper) {
+            for (i in 0 until compiledLen) {
+                buf[offset++] = compiled[i].uppercaseChar()
+            }
+            return normalizeNfc(String(buf, 0, offset))
+        }
+
+        val isFirstUpper = raw[0].isUpperCase()
+        var rawIdx = 0
+
+        for (i in 0 until compiledLen) {
+            val char = compiled[i]
+            val baseCompiled = getBaseChar(char)
+
+            var matchedChar: Char? = null
+            var tempIdx = rawIdx
+            while (tempIdx < rawLen) {
+                val rawChar = raw[tempIdx]
+                if (getBaseChar(rawChar) == baseCompiled) {
+                    matchedChar = rawChar
+                    rawIdx = tempIdx + 1
+                    break
+                }
+                tempIdx++
+            }
+
+            if (matchedChar != null) {
+                if (matchedChar.isUpperCase()) {
+                    buf[offset++] = char.uppercaseChar()
+                } else if (char.isUpperCase()) {
+                    buf[offset++] = char
+                } else {
+                    buf[offset++] = char.lowercaseChar()
+                }
+            } else {
+                if (char.isUpperCase()) {
+                    buf[offset++] = char
+                } else if (isFirstUpper && i == 0) {
+                    buf[offset++] = char.uppercaseChar()
+                } else {
+                    buf[offset++] = char.lowercaseChar()
+                }
+            }
+        }
+        return normalizeNfc(String(buf, 0, offset))
+    }
 }

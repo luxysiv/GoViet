@@ -80,6 +80,26 @@ val CompositionResult.text: String
     }
 
 /**
+ * Zero-allocation result container for processKey. Callers MUST read
+ * the result before invoking processKey again.
+ */
+class KeyResult {
+    enum class Kind { COMMIT, UPDATE, PASS_THROUGH }
+
+    var kind: Kind = Kind.PASS_THROUGH
+    var commitText: String = ""
+    var separator: Char = ' '
+    var updateText: String = ""
+
+    fun reset(kind: Kind) {
+        this.kind = kind
+        commitText = ""
+        separator = ' '
+        updateText = ""
+    }
+}
+
+/**
  * Engine configuration options.
  */
 data class EngineOptions(
@@ -88,3 +108,10 @@ data class EngineOptions(
     var directW: Boolean = false,
     var oldTonePlacement: Boolean = false
 )
+
+
+enum class TonePlacement {
+    LEGACY,
+    MODERN
+}
+

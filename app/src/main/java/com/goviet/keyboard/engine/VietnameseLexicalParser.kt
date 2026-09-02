@@ -126,13 +126,18 @@ object VietnameseLexicalParser {
 
         val parsed = parse(word)
         val display = parsed.toDisplayString(options.oldTonePlacement)
-        val isValid = parsed.rawSuffix.isEmpty() &&
-                VietnameseFiniteStateTable.isValidWord(display) &&
-                VietnameseFiniteStateTable.isValidWord(word)
+        val rimeKey = parsed.nucleus.lowercase() + parsed.coda.lowercase()
+        val isValidRimeOrPrefix = if (parsed.nucleus.isEmpty()) {
+            parsed.onset.isNotEmpty() && parsed.coda.isEmpty()
+        } else {
+            VietnameseFiniteStateTable.isValidPrefix(rimeKey) &&
+            VietnameseFiniteStateTable.isValidToneForRime(rimeKey, parsed.tone)
+        }
+        val isValid = parsed.rawSuffix.isEmpty() && isValidRimeOrPrefix
 
         if (isValid) {
             val canonical = parsed.toCanonicalKeystrokes()
-            val finalCanonical = VietnameseCharUtils.applyCasingFromRaw(canonical, word)
+            val finalCanonical = VietnameseUnicode.applyCasingFromRaw(canonical, word)
             val syllableState = VietnameseComposer.SyllableState(
                 onset = parsed.onset,
                 nucleus = parsed.nucleus,
@@ -180,7 +185,7 @@ object VietnameseLexicalParser {
             return ParsedSyllable("", "", "", Tone.NONE, "")
         }
 
-        val nfcWord = VietnameseCharUtils.normalizeNfc(word)
+        val nfcWord = VietnameseUnicode.normalizeNfc(word)
         
         // 1. Extract Tone
         var detectedTone = Tone.NONE
@@ -284,5 +289,57 @@ object VietnameseLexicalParser {
             else -> Tone.NONE
         }
     }
+}
 
+/**
+ * Utility for generating step-by-step composing snapshots from lexical analysis or canonical keystrokes
+ * without creating a new [VietnameseComposer] instance per invocation.
+ * Reuses a ThreadLocal instance to ensure zero allocation overhead and full thread-safety.
+ */
+object VietnameseSnapshotBuilder {
+
+    private val threadLocalComposer = object : ThreadLocal<VietnameseComposer>() {
+        override fun initialValue(): VietnameseComposer {
+            return VietnameseComposer(EngineOptions())
+        }
+    }
+
+    /**
+     * Deconstructs a parsed Vietnamese word into its canonical keystrokes and step-by-step composing snapshots.
+     */
+    fun generate(
+        analysis: VietnameseLexicalParser.AnalysisResult,
+        options: EngineOptions
+    ): Pair<String, List<VietnameseComposer.ComposerSnapshot>> {
+        if (!analysis.isValid || analysis.canonicalRaw.isEmpty()) {
+            return Pair("", emptyList())
+        }
+        val canonical = analysis.canonicalRaw
+        val composer = threadLocalComposer.get() ?: VietnameseComposer(options)
+        composer.options = options
+        composer.reset()
+        composer.ownership = CompositionOwnership.ADOPTED_VIETNAMESE
+
+        val snapshots = ArrayList<VietnameseComposer.ComposerSnapshot>(canonical.length)
+        for (i in 0 until canonical.length) {
+            val c = canonical[i]
+            composer.processKeyInternal(c)
+            val top = composer.getTopSnapshot()
+            if (top != null) {
+                snapshots.add(top.copy())
+            }
+        }
+        return Pair(canonical, snapshots)
+    }
+
+    /**
+     * Convenience method to analyze a word and build deconstructed snapshots.
+     */
+    fun generate(
+        word: String,
+        options: EngineOptions
+    ): Pair<String, List<VietnameseComposer.ComposerSnapshot>> {
+        val analysis = VietnameseLexicalParser.analyze(word, options)
+        return generate(analysis, options)
+    }
 }

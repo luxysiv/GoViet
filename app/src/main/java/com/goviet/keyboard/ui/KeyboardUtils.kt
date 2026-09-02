@@ -28,42 +28,39 @@ object KeyboardUtils {
     }
 
     fun getEnterTextLabel(imeOptions: Int, inputType: Int): String {
-        val isMultiLine = (inputType and InputType.TYPE_MASK_CLASS) == InputType.TYPE_CLASS_TEXT &&
-                ((inputType and InputType.TYPE_TEXT_FLAG_MULTI_LINE) != 0 ||
-                 (inputType and InputType.TYPE_TEXT_FLAG_IME_MULTI_LINE) != 0)
-        val hasNoEnterAction = (imeOptions and EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0
-
-        if (isMultiLine || hasNoEnterAction) {
-            return "Enter"
-        }
-        val action = imeOptions and EditorInfo.IME_MASK_ACTION
-        return when (action) {
-            EditorInfo.IME_ACTION_GO -> "Go"
-            EditorInfo.IME_ACTION_SEARCH -> "Search"
-            EditorInfo.IME_ACTION_SEND -> "Send"
-            EditorInfo.IME_ACTION_NEXT -> "Next"
-            EditorInfo.IME_ACTION_DONE -> "Done"
-            else -> "Enter"
-        }
+        return enterActionLabel(imeOptions, inputType, "Enter", "Go", "Search", "Send", "Next", "Done")
     }
 
     fun getEnterSymbolLabel(imeOptions: Int, inputType: Int): String {
+        return enterActionLabel(imeOptions, inputType, "↵", "➔", "🔍", "➤", "➔", "✓")
+    }
+
+    private fun enterActionLabel(
+        imeOptions: Int,
+        inputType: Int,
+        defaultLabel: String,
+        goLabel: String,
+        searchLabel: String,
+        sendLabel: String,
+        nextLabel: String,
+        doneLabel: String
+    ): String {
         val isMultiLine = (inputType and InputType.TYPE_MASK_CLASS) == InputType.TYPE_CLASS_TEXT &&
                 ((inputType and InputType.TYPE_TEXT_FLAG_MULTI_LINE) != 0 ||
                  (inputType and InputType.TYPE_TEXT_FLAG_IME_MULTI_LINE) != 0)
         val hasNoEnterAction = (imeOptions and EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0
 
         if (isMultiLine || hasNoEnterAction) {
-            return "↵"
+            return defaultLabel
         }
         val action = imeOptions and EditorInfo.IME_MASK_ACTION
         return when (action) {
-            EditorInfo.IME_ACTION_GO -> "➔"
-            EditorInfo.IME_ACTION_SEARCH -> "🔍"
-            EditorInfo.IME_ACTION_SEND -> "➤"
-            EditorInfo.IME_ACTION_NEXT -> "➔"
-            EditorInfo.IME_ACTION_DONE -> "✓"
-            else -> "↵"
+            EditorInfo.IME_ACTION_GO -> goLabel
+            EditorInfo.IME_ACTION_SEARCH -> searchLabel
+            EditorInfo.IME_ACTION_SEND -> sendLabel
+            EditorInfo.IME_ACTION_NEXT -> nextLabel
+            EditorInfo.IME_ACTION_DONE -> doneLabel
+            else -> defaultLabel
         }
     }
 

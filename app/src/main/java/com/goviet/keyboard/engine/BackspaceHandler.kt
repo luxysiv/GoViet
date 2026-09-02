@@ -10,26 +10,23 @@ import android.view.inputmethod.InputConnection
  * 1. Active selection deletion
  * 2. Active composing session step-by-step undo via IME State Stack
  * 3. Macro expansion rollback (e.g. restoring 'vn' after typing 'vn ')
- * 4. Word adoption & preceding Vietnamese syllable undo
- * 5. Unicode Grapheme Cluster deletion (proper handling of emojis, accents, surrogate pairs)
- * 6. Word-level backward deletion (Ctrl+Backspace / Swipe delete)
+ * 4. Unicode Grapheme Cluster deletion (proper handling of emojis, accents, surrogate pairs)
+ * 5. Word-level backward deletion (Ctrl+Backspace / Swipe delete)
  */
 class BackspaceHandler(
     private val controller: ImeInputConnectionController
 ) {
 
     /**
-     * Executes the primary Backspace action according to the strict priority chain:
+     * Executes the primary Backspace action according to the standardized priority chain:
      * 1. Active Selection -> Delete Selection
-     * 2. Active Composing Session -> Step Undo via State Stack
+     * 2. Active Composing Session -> Grapheme reduction via VietnameseEditReducer
      * 3. Macro Rollback -> Restore original abbreviation trigger
-     * 4. Context Word Adoption -> Adopt preceding syllable & undo last step
-     * 5. Raw Editor Content -> Delete single Unicode grapheme cluster
+     * 4. Raw Editor Content -> Delete single Unicode grapheme cluster
      */
     fun handleBackspace(ic: InputConnection) {
         ic.beginBatchEdit()
         try {
-            controller.currentTransactionId++
             // Priority 1: Selection deletion
             val hasSelection = (controller.cachedSelStart != controller.cachedSelEnd) || controller.isSelecting
             if (hasSelection) {
@@ -40,15 +37,9 @@ class BackspaceHandler(
                 return
             }
 
-            // Priority 2: Active composing session undo
+            // Priority 2: Active composing session undo (grapheme deletion preserving syllable structure)
             if (controller.composingRaw.isNotEmpty()) {
-                if (controller.isComposingStateDesynced(ic)) {
-                    ic.finishComposingText()
-                    controller.clearState()
-                    deleteLastGraphemeOrChar(ic)
-                } else {
-                    performComposingBackspace(ic)
-                }
+                performComposingBackspace(ic)
                 controller.service.evaluateAutoShift()
                 return
             }
@@ -64,8 +55,8 @@ class BackspaceHandler(
                     controller.composingRaw.clear()
                     controller.composingRaw.append(macro.trigger)
                     controller.composingCursorIndex = macro.trigger.length
-                    val (compiled, snap) = controller.inputEngine.syncWithRaw(macro.trigger, controller.compositionOwnership)
-                    val cased = VietnameseCharUtils.applyCasingFromRaw(compiled, macro.trigger)
+                    val (compiled, snap) = controller.inputEngine.syncStateFromRaw(macro.trigger, controller.compositionOwnership)
+                    val cased = VietnameseUnicode.applyCasingFromRaw(compiled, macro.trigger)
                     snap.displayText = cased
                     controller.pushImeSnapshot(
                         raw = macro.trigger,
@@ -80,7 +71,7 @@ class BackspaceHandler(
             }
             controller.lastExpandedMacro = null
 
-            // Priority 4: Raw Unicode Grapheme Cluster deletion (formed text deletion)
+            // Priority 4: Raw Unicode Grapheme Cluster deletion (formed text / foreign text / emoji)
             deleteLastGraphemeOrChar(ic)
             controller.service.evaluateAutoShift()
         } finally {
@@ -94,7 +85,6 @@ class BackspaceHandler(
     fun handleDeleteWord(ic: InputConnection) {
         ic.beginBatchEdit()
         try {
-            controller.currentTransactionId++
             controller.lastExpandedMacro = null
             if (controller.composingRaw.isNotEmpty()) {
                 val lastLen = controller.lastSetComposingText?.length ?: 0
@@ -120,45 +110,42 @@ class BackspaceHandler(
 
     /**
      * Performs backspace during an active composing session.
-     * Prioritizes Snapshot-first exact state restoration, falling back to VietnameseEditReducer.
+     * Consistently reduces grapheme clusters or rolls back keystroke snapshots while preserving syllable structure and tone marks.
      */
     fun performComposingBackspace(ic: InputConnection) {
-        // 1. Snapshot-first undo during active typing sessions
-        if (controller.imeUndoCount > 1) {
-            controller.popImeSnapshot()
-            val prevSnap = controller.getTopImeSnapshot()
-            if (prevSnap != null) {
-                controller.composingRaw.clear()
-                controller.composingRaw.append(prevSnap.composingRaw)
-                controller.composingCursorIndex = prevSnap.composingCursorIndex
-                controller.activeComposingShiftState = prevSnap.shiftState
-                controller.compositionOwnership = prevSnap.ownership
-                val restoredDisplay = prevSnap.displayText
-
-                controller.inputEngine.restoreSnapshot(prevSnap.composerSnapshot)
-
-                replaceComposingText(ic, restoredDisplay)
-
-                if (controller.composingStartInEditor >= 0) {
-                    val cursorInDisp = prevSnap.displayCursorIndex.coerceIn(0, restoredDisplay.length)
-                    val newCursor = controller.composingStartInEditor + cursorInDisp
-                    if (newCursor >= 0) {
-                        ic.setSelection(newCursor, newCursor)
-                        controller.expectedCursorStart = newCursor
-                        controller.expectedCursorEnd = newCursor
-                    }
-                }
-                return
-            }
-        }
-
-        // 2. Non-snapshot / Adopted / Boundary backspace via unified VietnameseEditReducer
         val currentDisplay = controller.lastSetComposingText ?: controller.compileComposingText()
         if (currentDisplay.isEmpty()) {
             val lastLen = controller.lastSetComposingText?.length ?: 0
             controller.resetComposingUI(ic, lastLen)
             controller.clearState()
             return
+        }
+
+        // Fast-path: When typing sequentially at the end of active composition with snapshot history
+        val isAtEnd = controller.composingCursorIndex == controller.composingRaw.length
+        if (isAtEnd && controller.imeUndoCount > 0) {
+            if (controller.imeUndoCount == 1) {
+                val lastLen = controller.lastSetComposingText?.length ?: 0
+                controller.resetComposingUI(ic, lastLen)
+                controller.clearState()
+                return
+            }
+
+            controller.popImeSnapshot()
+            val prevSnap = controller.getTopImeSnapshot()
+            if (prevSnap != null) {
+                controller.composingRaw.clear()
+                controller.composingRaw.append(prevSnap.composingRaw)
+                controller.composingCursorIndex = prevSnap.composingCursorIndex
+                controller.compositionOwnership = prevSnap.ownership
+                controller.inputEngine.restoreSnapshot(prevSnap.composerSnapshot)
+                replaceComposingText(ic, prevSnap.displayText)
+                if (controller.composingStartInEditor >= 0) {
+                    val newCursor = controller.composingStartInEditor + prevSnap.displayCursorIndex
+                    controller.moveCursorTo(ic, newCursor)
+                }
+                return
+            }
         }
 
         // Determine exact cursor position in display text
@@ -216,7 +203,6 @@ class BackspaceHandler(
     fun handleDeleteForward(ic: InputConnection) {
         ic.beginBatchEdit()
         try {
-            controller.currentTransactionId++
             val hasSelection = (controller.cachedSelStart != controller.cachedSelEnd) || controller.isSelecting
             if (hasSelection) {
                 deleteSelection(ic)
@@ -227,13 +213,7 @@ class BackspaceHandler(
             }
 
             if (controller.composingRaw.isNotEmpty()) {
-                if (controller.isComposingStateDesynced(ic)) {
-                    ic.finishComposingText()
-                    controller.clearState()
-                    deleteNextGraphemeOrChar(ic)
-                } else {
-                    performComposingDeleteForward(ic)
-                }
+                performComposingDeleteForward(ic)
                 controller.service.evaluateAutoShift()
                 return
             }
@@ -305,11 +285,7 @@ class BackspaceHandler(
 
         if (controller.composingStartInEditor >= 0) {
             val newCursor = controller.composingStartInEditor + result.cursorInDisplay
-            if (newCursor >= 0) {
-                ic.setSelection(newCursor, newCursor)
-                controller.expectedCursorStart = newCursor
-                controller.expectedCursorEnd = newCursor
-            }
+            controller.moveCursorTo(ic, newCursor)
         }
     }
 
@@ -317,7 +293,9 @@ class BackspaceHandler(
      * Deletes the preceding Unicode grapheme cluster (supporting emojis, composite marks).
      */
     fun deleteLastGraphemeOrChar(ic: InputConnection) {
-        val beforeText = ic.getTextBeforeCursor(20, 0)
+        // Use a generous buffer: a ZWJ emoji like 👨‍👩‍👧‍👦 spans many UTF-16 code units
+        // and would be truncated by a small fixed window.
+        val beforeText = ic.getTextBeforeCursor(128, 0)
         if (beforeText != null && beforeText.isNotEmpty()) {
             val text = beforeText.toString()
             val charsToDelete = GraphemeEditor.getBackwardGraphemeLength(text)
@@ -333,7 +311,7 @@ class BackspaceHandler(
      * Deletes the next Unicode grapheme cluster forward (Forward Delete).
      */
     fun deleteNextGraphemeOrChar(ic: InputConnection) {
-        val afterText = ic.getTextAfterCursor(20, 0)
+        val afterText = ic.getTextAfterCursor(128, 0)
         if (afterText != null && afterText.isNotEmpty()) {
             val text = afterText.toString()
             val charsToDelete = GraphemeEditor.getForwardGraphemeLength(text)

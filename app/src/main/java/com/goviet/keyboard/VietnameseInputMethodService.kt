@@ -75,28 +75,23 @@ class VietnameseInputMethodService : InputMethodService(), LifecycleOwner, ViewM
     val inputMethods = listOf("Vietnamese", "Bamboo", "English", "Pinyin")
     val currentInputMethodIndex = MutableStateFlow(0) // 0: Vietnamese, 1: Bamboo, 2: English, 3: Pinyin
 
-    fun switchToNextInputMethod() {
-        val nextIdx = (currentInputMethodIndex.value + 1) % inputMethods.size
-        currentInputMethodIndex.value = nextIdx
-        _languageMode.value = if (nextIdx == 0 || nextIdx == 1) "VIE" else "ENG"
+    private fun applyInputMethod(index: Int) {
+        currentInputMethodIndex.value = index
+        _languageMode.value = if (index == 0 || index == 1) "VIE" else "ENG"
         inputProcessor.clearState()
         currentInputConnection?.finishComposingText()
+    }
+
+    fun switchToNextInputMethod() {
+        applyInputMethod((currentInputMethodIndex.value + 1) % inputMethods.size)
     }
 
     fun switchToPrevInputMethod() {
-        val prevIdx = (currentInputMethodIndex.value - 1 + inputMethods.size) % inputMethods.size
-        currentInputMethodIndex.value = prevIdx
-        _languageMode.value = if (prevIdx == 0 || prevIdx == 1) "VIE" else "ENG"
-        inputProcessor.clearState()
-        currentInputConnection?.finishComposingText()
+        applyInputMethod((currentInputMethodIndex.value - 1 + inputMethods.size) % inputMethods.size)
     }
 
     fun setInputMethod(index: Int) {
-        val safeIdx = index.coerceIn(0, inputMethods.size - 1)
-        currentInputMethodIndex.value = safeIdx
-        _languageMode.value = if (safeIdx == 0 || safeIdx == 1) "VIE" else "ENG"
-        inputProcessor.clearState()
-        currentInputConnection?.finishComposingText()
+        applyInputMethod(index.coerceIn(0, inputMethods.size - 1))
     }
 
     override fun onCreate() {

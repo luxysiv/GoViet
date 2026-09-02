@@ -63,7 +63,7 @@ object VietnameseCursorMapper {
         composer.options = options
         composer.reset()
         for (i in 0 until raw.length) {
-            composer.processKey(raw[i])
+            composer.processKeyInternal(raw[i])
             rawToDisplayMap[i + 1] = composer.toDisplayString().length
         }
 

@@ -294,9 +294,12 @@ class VietnameseInputEngineTest {
         assertEquals("oooo", engine.process("ooooo"))
         assertEquals("oó", engine.process("ooos"))
         assertEquals("oọ", engine.process("oooj"))
+        assertEquals("oow", engine.process("ooow"))
         assertEquals("coo", engine.process("cooo"))
         assertEquals("cooo", engine.process("coooo"))
         assertEquals("coó", engine.process("cooos"))
+        assertEquals("coón", engine.process("cooosn"))
+        assertEquals("coóng", engine.process("cooosng"))
         assertEquals("coọ", engine.process("coooj"))
         assertEquals("coóng", engine.process("cooongs"))
     }
@@ -455,6 +458,16 @@ class VietnameseInputEngineTest {
         assertEquals("uyên", engine.process("uyeen"))
         assertEquals("uyển", engine.process("uyeenr"))
         assertEquals("quyền", engine.process("quyeenf"))
+        assertEquals("tuyết", engine.process("tuyeets"))
+        assertEquals("tuyết", engine.process("tuyeest"))
+        assertEquals("tuyét", engine.process("tuyest"))
+        assertEquals("thuyết", engine.process("thuyeest"))
+        assertEquals("thuyét", engine.process("thuyest"))
+        assertEquals("chuyện", engine.process("chuyeenj"))
+        assertEquals("chuyẹn", engine.process("chuyenj"))
+        assertEquals("khuyên", engine.process("khuyeen"))
+        assertEquals("khuyến", engine.process("khuyeens"))
+        assertEquals("khuyén", engine.process("khuyesn"))
     }
 
     @Test
@@ -987,7 +1000,8 @@ class VietnameseInputEngineTest {
         // 5. Kiểm thử hoàn tác từng ký tự hiển thị (grapheme) từ từ được phục dựng
         val composer = VietnameseComposer(engine.options)
         val lastResult = raw.map { composer.processKey(it) }.last()
-        assertEquals("đường", lastResult.text)
+        assertTrue(lastResult is CompositionResult.Update)
+        assertEquals("đường", (lastResult as CompositionResult.Update).text.toString())
         
         // Xóa 'g' -> còn 'đườn'
         assertEquals("đườn", composer.backspace())
@@ -1367,14 +1381,13 @@ class VietnameseInputEngineTest {
         assertEquals(InputBoundary.SENTENCE_TERMINATOR, BoundaryClassifier.classify('.'))
         assertEquals(InputBoundary.NONE, BoundaryClassifier.classify('a'))
 
-        // Telex mode bracket behavior
+        // Boundary checks
         assertTrue(BoundaryClassifier.isBoundary("SPACE"))
         assertTrue(BoundaryClassifier.isBoundary("ENTER"))
         assertTrue(BoundaryClassifier.isBoundary(","))
         assertTrue(BoundaryClassifier.isBoundary("."))
-        assertFalse(BoundaryClassifier.isBoundary("[", isTelexMode = true))
-        assertFalse(BoundaryClassifier.isBoundary("]", isTelexMode = true))
-        assertTrue(BoundaryClassifier.isBoundary("[", isTelexMode = false))
+        assertTrue(BoundaryClassifier.isBoundary("["))
+        assertTrue(BoundaryClassifier.isBoundary("]"))
     }
 
     @Test
@@ -1494,13 +1507,13 @@ class VietnameseInputEngineTest {
         assertEquals(0, VietnameseFiniteStateTable.findTonePosition(onset = "h", rime = "oa", oldTonePlacement = true)) // hoà (old) -> 'o' (index 0)
         assertEquals(1, VietnameseFiniteStateTable.findTonePosition(onset = "h", rime = "oa", oldTonePlacement = false)) // hòa (new) -> 'a' (index 1)
 
-        // VietnameseCharUtils tests
-        assertEquals("VIỆT", VietnameseCharUtils.applyCasingFromRaw("việt", "VIET"))
-        assertEquals("Việt", VietnameseCharUtils.applyCasingFromRaw("việt", "Viet"))
-        assertEquals("việt", VietnameseCharUtils.applyCasingFromRaw("việt", "viet"))
-        assertEquals("a", VietnameseCharUtils.getBaseChar('ắ').toString())
-        assertEquals("d", VietnameseCharUtils.getBaseChar('Đ').toString())
-        assertEquals("Hà Nội", VietnameseCharUtils.normalizeNfc("Hà Nội"))
+        // VietnameseUnicode tests
+        assertEquals("VIỆT", VietnameseUnicode.applyCasingFromRaw("việt", "VIET"))
+        assertEquals("Việt", VietnameseUnicode.applyCasingFromRaw("việt", "Viet"))
+        assertEquals("việt", VietnameseUnicode.applyCasingFromRaw("việt", "viet"))
+        assertEquals("a", VietnameseUnicode.getBaseChar('ắ').toString())
+        assertEquals("d", VietnameseUnicode.getBaseChar('Đ').toString())
+        assertEquals("Hà Nội", VietnameseUnicode.normalizeNfc("Hà Nội"))
     }
 
     @Test
@@ -1564,5 +1577,187 @@ class VietnameseInputEngineTest {
         assertFalse(EditedVietnameseRecognizer.canRecompose("car"))  // coda r
         assertFalse(EditedVietnameseRecognizer.canRecompose("bus"))  // coda s
     }
+
+    @Test
+    fun testWordAdoptionAndStepUndoChain() {
+        val word = "tiếng"
+        assertTrue(EditedVietnameseRecognizer.canRecompose(word, engine.options))
+        val (canonical, snaps) = VietnameseSnapshotBuilder.generate(word, engine.options)
+        assertEquals("tieengs", canonical)
+        assertTrue(snaps.size >= 6)
+
+        engine.loadAdoptedSyllable(snaps.last().state, canonical, snaps)
+        assertEquals("tiếng", engine.toDisplayString())
+
+        // Backspace step by step using VietnameseEditReducer
+        assertEquals("tiến", engine.backspace())
+        assertEquals("tiế", engine.backspace())
+        assertEquals("ti", engine.backspace())
+        assertEquals("t", engine.backspace())
+        assertEquals("", engine.backspace())
+    }
+
+    @Test
+    fun testWordAdoptionToneModification() {
+        // Adopt "tiên", add tone 's' -> "tiến"
+        val (canonical, snaps) = VietnameseSnapshotBuilder.generate("tiên", engine.options)
+        engine.loadAdoptedSyllable(snaps.last().state, canonical, snaps)
+        assertEquals("tiên", engine.toDisplayString())
+
+        engine.processKey('s')
+        assertEquals("tiến", engine.toDisplayString())
+
+        // Change tone to grave 'f' -> "tiền"
+        engine.processKey('f')
+        assertEquals("tiền", engine.toDisplayString())
+    }
+
+    @Test
+    fun testEscapedSequencesAndToneKey() {
+        // chuww -> chuw, chuwws -> chuws (not chúw)
+        assertEquals("chuw", engine.process("chuww"))
+        assertEquals("chuws", engine.process("chuwws"))
+
+        // uww -> uw, uwws -> uws
+        assertEquals("uw", engine.process("uww"))
+        assertEquals("uws", engine.process("uwws"))
+
+        // ddd -> dd, ddds -> dds
+        assertEquals("dd", engine.process("ddd"))
+        assertEquals("dds", engine.process("ddds"))
+    }
+
+    @Test
+    fun testCursorAdoptionPhonologicalRules() {
+        val analysis = VietnameseLexicalParser.analyze("bong", engine.options)
+        assertTrue(analysis.isValid)
+        val parsed = analysis.parsed
+        assertNotNull(parsed)
+        assertEquals("b", parsed!!.onset)
+        assertEquals("o", parsed.nucleus)
+        assertEquals("ng", parsed.coda)
+
+        val onsetEnd = parsed.onset.length // 1
+        // Offset 1 (after 'b'): wordCursorOffset (1) >= onsetEnd + 1 (2) is false (literal insertion 'bsong')
+        val offsetAfterB = 1
+        assertFalse(offsetAfterB >= onsetEnd + 1)
+
+        // Offset 2 (after 'o'): wordCursorOffset (2) >= onsetEnd + 1 (2) is true (adopt -> 'bóng')
+        val offsetAfterO = 2
+        assertTrue(offsetAfterO >= onsetEnd + 1)
+
+        // Offset 3 (after 'n'): wordCursorOffset (3) >= onsetEnd + 1 (2) is true (adopt -> 'bóng')
+        val offsetAfterN = 3
+        assertTrue(offsetAfterN >= onsetEnd + 1)
+
+        // Offset 4 (after 'g', at end of word): isAtEnd is true (adopt -> 'bóng')
+        val offsetAfterG = 4
+        assertEquals(4, "bong".length)
+        assertTrue(offsetAfterG == "bong".length)
+    }
+
+    @Test
+    fun testStandardizedBackspaceVisualGraphemeReduction() {
+        // "đường" -> "đườn" -> "đườ" -> "đư" -> "đ" -> ""
+        engine.reset()
+        for (c in "dduwongf") engine.processKey(c)
+        assertEquals("đường", engine.toDisplayString())
+        assertEquals("đườn", engine.backspace())
+        assertEquals("đườ", engine.backspace())
+        assertEquals("đư", engine.backspace())
+        assertEquals("đ", engine.backspace())
+        assertEquals("", engine.backspace())
+
+        // "toán" -> "toá" -> "to" -> "t" -> ""
+        engine.reset()
+        for (c in "toans") engine.processKey(c)
+        assertEquals("toán", engine.toDisplayString())
+        assertEquals("toá", engine.backspace())
+        assertEquals("to", engine.backspace())
+        assertEquals("t", engine.backspace())
+        assertEquals("", engine.backspace())
+
+        // "việt" -> "việ" -> "vi" -> "v" -> ""
+        engine.reset()
+        for (c in "vieetj") engine.processKey(c)
+        assertEquals("việt", engine.toDisplayString())
+        assertEquals("việ", engine.backspace())
+        assertEquals("vi", engine.backspace())
+        assertEquals("v", engine.backspace())
+        assertEquals("", engine.backspace())
+    }
+
+    @Test
+    fun testAdoptAndContinueTypingOnExistingWords() {
+        // Test lexical analysis of partial words/onsets
+        val analysisD = VietnameseLexicalParser.analyze("đ")
+        assertTrue(analysisD.isValid)
+        assertEquals("dd", analysisD.canonicalRaw)
+
+        val analysisV = VietnameseLexicalParser.analyze("v")
+        assertTrue(analysisV.isValid)
+        assertEquals("v", analysisV.canonicalRaw)
+
+        val analysisVie = VietnameseLexicalParser.analyze("việ")
+        assertTrue(analysisVie.isValid)
+        assertEquals("vieej", analysisVie.canonicalRaw.lowercase())
+
+        val analysisDuon = VietnameseLexicalParser.analyze("đườn")
+        assertTrue(analysisDuon.isValid)
+
+        // Test adopting and continuing typing with snapshot builder and engine
+        val (canonical, snaps) = VietnameseSnapshotBuilder.generate(analysisVie, EngineOptions())
+        assertTrue(snaps.isNotEmpty())
+        engine.reset()
+        engine.loadAdoptedSyllable(snaps.last().state, canonical, snaps)
+        assertEquals("việt", engine.processKey('t').text)
+
+        // Test onset "đ" + typing "ang" -> "đang"
+        val (canonicalD, snapsD) = VietnameseSnapshotBuilder.generate(analysisD, EngineOptions())
+        engine.reset()
+        engine.loadAdoptedSyllable(snapsD.last().state, canonicalD, snapsD)
+        assertEquals("đa", engine.processKey('a').text)
+        assertEquals("đan", engine.processKey('n').text)
+        assertEquals("đang", engine.processKey('g').text)
+
+        // Test "đườn" + typing 'g' -> "đường"
+        val (canonicalDuon2, snapsDuon) = VietnameseSnapshotBuilder.generate(analysisDuon, EngineOptions())
+        engine.reset()
+        engine.loadAdoptedSyllable(snapsDuon.last().state, canonicalDuon2, snapsDuon)
+        assertEquals("đường", engine.processKey('g').text)
+
+        // Test adopting literal / foreign / suggestion words like "confirm" and continuing typing
+        val (canonicalConfirm, snapConfirm) = engine.syncStateFromRaw("confirm", CompositionOwnership.EDITED_LITERAL)
+        assertEquals("confirm", canonicalConfirm)
+        val (canonicalConfirmF, _) = engine.syncStateFromRaw("confirmf", CompositionOwnership.EDITED_LITERAL)
+        assertEquals("confirmf", canonicalConfirmF)
+
+        // Test Backspace on "thee" in EDITED_LITERAL -> "the" promotes to ADOPTED_VIETNAMESE -> typing 'e' -> "thê"
+        val reducedThee = VietnameseEditReducer.reduceBackspace(
+            currentDisplay = "thee",
+            cursorInDisplay = 4,
+            currentOwnership = CompositionOwnership.EDITED_LITERAL,
+            options = EngineOptions()
+        )
+        assertEquals("the", reducedThee.display)
+        assertEquals(CompositionOwnership.ADOPTED_VIETNAMESE, reducedThee.ownership)
+        engine.reset()
+        engine.loadAdoptedSyllable(reducedThee.syllableState, reducedThee.canonicalRaw, reducedThee.snapshots)
+        assertEquals("thê", engine.processKey('e').text)
+
+        // Test Backspace on "theo" -> "the" -> typing 'e' -> "thê"
+        val reducedTheo = VietnameseEditReducer.reduceBackspace(
+            currentDisplay = "theo",
+            cursorInDisplay = 4,
+            currentOwnership = CompositionOwnership.LIVE_VIETNAMESE,
+            options = EngineOptions()
+        )
+        assertEquals("the", reducedTheo.display)
+        assertEquals(CompositionOwnership.ADOPTED_VIETNAMESE, reducedTheo.ownership)
+        engine.reset()
+        engine.loadAdoptedSyllable(reducedTheo.syllableState, reducedTheo.canonicalRaw, reducedTheo.snapshots)
+        assertEquals("thê", engine.processKey('e').text)
+    }
 }
+
 

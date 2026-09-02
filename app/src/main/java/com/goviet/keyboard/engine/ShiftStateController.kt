@@ -5,6 +5,63 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
+ * Classification of input boundaries for consistent word breaks, commit triggers,
+ * sentence endings, and auto-capitalization across the engine and UI.
+ */
+enum class InputBoundary {
+    NONE,
+    WHITESPACE,
+    WORD_SEPARATOR,
+    SENTENCE_TERMINATOR,
+    HARD_BREAK
+}
+
+object BoundaryClassifier {
+
+    fun classify(c: Char): InputBoundary {
+        return when {
+            c == '\n' || c == '\r' -> InputBoundary.HARD_BREAK
+            c.isWhitespace() -> InputBoundary.WHITESPACE
+            c == '.' || c == '?' || c == '!' -> InputBoundary.SENTENCE_TERMINATOR
+            c == ',' || c == ';' || c == ':' || c == '-' || c == '/' || c == '(' || c == ')' ||
+            c == '[' || c == ']' || c == '{' || c == '}' || c == '\"' || c == '\'' || c == '«' ||
+            c == '»' || c == '`' || c == '~' || c == '@' || c == '#' || c == '$' || c == '%' ||
+            c == '^' || c == '&' || c == '*' || c == '_' || c == '=' || c == '+' || c == '|' ||
+            c == '\\' || c == '<' || c == '>' -> InputBoundary.WORD_SEPARATOR
+            else -> InputBoundary.NONE
+        }
+    }
+
+    fun isBoundaryChar(c: Char): Boolean {
+        return classify(c) != InputBoundary.NONE
+    }
+
+    fun isWhitespace(c: Char): Boolean = classify(c) == InputBoundary.WHITESPACE
+
+    fun isHardBreak(c: Char): Boolean = classify(c) == InputBoundary.HARD_BREAK
+
+    fun isSentenceTerminator(c: Char): Boolean = classify(c) == InputBoundary.SENTENCE_TERMINATOR
+
+    fun isSentenceTerminator(key: String): Boolean {
+        if (key == "ENTER" || key == "\n" || key == "\r") return true
+        if (key.length == 1) return isSentenceTerminator(key[0])
+        return false
+    }
+
+    fun isWordSeparator(c: Char): Boolean =
+        classify(c) == InputBoundary.WORD_SEPARATOR
+
+    fun isBoundary(key: String): Boolean {
+        if (key.isEmpty()) return false
+        if (key == "SPACE" || key == "ENTER") return true
+        if (key.length == 1) {
+            return isBoundaryChar(key[0])
+        }
+        return false
+    }
+}
+
+/**
  * Controller for managing shift / caps lock state cleanly and consistently.
  * Values:
  * 0 = Lowercase

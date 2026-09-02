@@ -278,46 +278,60 @@ class TraditionalClipboardView @JvmOverloads constructor(
                         }
                         layout.textStartX = startX
                         val availW = layout.cardRect.right - startX - 12f * density
-                        val textToDraw = item.entity.text
+                        val rawText = item.entity.text
 
-                        val paragraphs = textToDraw.split("\n")
+                        // Pre-truncate extremely long text to prevent slow parsing on giant strings (e.g. Base64, raw dumps)
+                        val maxPreviewChars = 240
+                        val isTextTruncated = rawText.length > maxPreviewChars
+                        val textToProcess = if (isTextTruncated) rawText.substring(0, maxPreviewChars) else rawText
+
+                        val maxLines = 2
+                        val paragraphs = textToProcess.split("\n")
                         outer@ for (para in paragraphs) {
-                            val words = para.split(" ")
-                            var curLine = StringBuilder()
-                            for (word in words) {
-                                val testLine = if (curLine.isEmpty()) word else "${curLine} $word"
-                                val width = textPaint.measureText(testLine)
-                                if (width <= availW) {
-                                    curLine.append(if (curLine.isEmpty()) word else " $word")
+                            var remaining = para.trimEnd()
+                            if (remaining.isEmpty()) continue
+                            
+                            while (remaining.isNotEmpty() && layout.lines.size < maxLines) {
+                                val fitCount = textPaint.breakText(remaining, true, availW, null)
+                                if (fitCount <= 0) break
+                                if (fitCount >= remaining.length) {
+                                    layout.lines.add(remaining)
+                                    break
                                 } else {
-                                    if (curLine.isNotEmpty()) {
-                                        layout.lines.add(curLine.toString())
-                                        curLine = StringBuilder(word)
-                                    } else {
-                                        layout.lines.add(word)
+                                    // Try breaking at word boundary if within a reasonable distance
+                                    var breakIdx = fitCount
+                                    val lastSpace = remaining.lastIndexOf(' ', breakIdx)
+                                    if (lastSpace > 0 && lastSpace >= breakIdx - 12) {
+                                        breakIdx = lastSpace
                                     }
-                                    if (layout.lines.size >= 2) break@outer
+                                    layout.lines.add(remaining.substring(0, breakIdx).trimEnd())
+                                    remaining = remaining.substring(breakIdx).trimStart()
                                 }
                             }
-                            if (curLine.isNotEmpty()) {
-                                layout.lines.add(curLine.toString())
-                            }
-                            if (layout.lines.size >= 2) break
+                            if (layout.lines.size >= maxLines) break@outer
                         }
 
-                        if (layout.lines.size > 2 || (layout.lines.size == 2 && textToDraw.length > layout.lines[0].length + layout.lines[1].length + 1)) {
-                            var line2 = layout.lines[1]
-                            while (line2.isNotEmpty() && textPaint.measureText("$line2…") > availW) {
-                                line2 = line2.dropLast(1)
+                        if (layout.lines.isEmpty() && textToProcess.isNotEmpty()) {
+                            val fit = textPaint.breakText(textToProcess, true, availW, null)
+                            if (fit > 0) {
+                                layout.lines.add(textToProcess.substring(0, fit))
                             }
-                            layout.lines[1] = "$line2…"
-                            while (layout.lines.size > 2) layout.lines.removeAt(2)
-                        } else if (layout.lines.size == 1 && textPaint.measureText(layout.lines[0]) > availW) {
-                            var line1 = layout.lines[0]
-                            while (line1.isNotEmpty() && textPaint.measureText("$line1…") > availW) {
-                                line1 = line1.dropLast(1)
-                            }
-                            layout.lines[0] = "$line1…"
+                        }
+
+                        val hasMore = isTextTruncated || paragraphs.size > layout.lines.size || (layout.lines.size == maxLines && textToProcess.length > layout.lines.sumOf { it.length } + 3)
+                        while (layout.lines.size > maxLines) {
+                            layout.lines.removeAt(layout.lines.size - 1)
+                        }
+
+                        if (hasMore && layout.lines.isNotEmpty()) {
+                            val lastIdx = layout.lines.size - 1
+                            val lastLine = layout.lines[lastIdx]
+                            val ellipsis = "…"
+                            val ellipsisW = textPaint.measureText(ellipsis)
+                            val availForLast = (availW - ellipsisW).coerceAtLeast(0f)
+                            val fitCount = textPaint.breakText(lastLine, true, availForLast, null)
+                            val trimmed = if (fitCount < lastLine.length) lastLine.substring(0, fitCount).trimEnd() else lastLine
+                            layout.lines[lastIdx] = "$trimmed$ellipsis"
                         }
 
                         val totalTextHeight = if (layout.lines.size == 2) charHeight * 2 + lineSpacing else charHeight
