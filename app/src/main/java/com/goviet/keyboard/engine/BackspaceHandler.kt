@@ -8,7 +8,7 @@ import android.view.inputmethod.InputConnection
  *
  * Responsibilities:
  * 1. Active selection deletion
- * 2. Active composing session step-by-step undo via IME State Stack
+ * 2. Active composing session grapheme reduction via VietnameseEditReducer
  * 3. Macro expansion rollback (e.g. restoring 'vn' after typing 'vn ')
  * 4. Unicode Grapheme Cluster deletion (proper handling of emojis, accents, surrogate pairs)
  * 5. Word-level backward deletion (Ctrl+Backspace / Swipe delete)
@@ -27,6 +27,10 @@ class BackspaceHandler(
     fun handleBackspace(ic: InputConnection) {
         ic.beginBatchEdit()
         try {
+            // Touch lastKeyPressTime so that onUpdateSelection recognises the
+            // backspace as "recent typing" and does not spuriously clearState().
+            controller.lastKeyPressTime = System.currentTimeMillis()
+
             // Priority 1: Selection deletion
             val hasSelection = (controller.cachedSelStart != controller.cachedSelEnd) || controller.isSelecting
             if (hasSelection) {
@@ -55,15 +59,12 @@ class BackspaceHandler(
                     controller.composingRaw.clear()
                     controller.composingRaw.append(macro.trigger)
                     controller.composingCursorIndex = macro.trigger.length
-                    val (compiled, snap) = controller.inputEngine.syncStateFromRaw(macro.trigger, controller.compositionOwnership)
+                    val syncResult = controller.syncResult
+                    controller.inputEngine.syncStateFromRaw(macro.trigger, controller.isVietnamese, syncResult)
+                    val compiled = syncResult.displayText
                     val cased = VietnameseUnicode.applyCasingFromRaw(compiled, macro.trigger)
-                    snap.displayText = cased
-                    controller.pushImeSnapshot(
-                        raw = macro.trigger,
-                        cursor = macro.trigger.length,
-                        shift = controller.activeComposingShiftState,
-                        snap = snap
-                    )
+                    syncResult.snapshot.displayBuffer.clear()
+                    syncResult.snapshot.displayBuffer.append(cased)
                     controller.updateComposingUI(ic, explicitCompiled = cased)
                     controller.service.evaluateAutoShift()
                     return
@@ -110,7 +111,7 @@ class BackspaceHandler(
 
     /**
      * Performs backspace during an active composing session.
-     * Consistently reduces grapheme clusters or rolls back keystroke snapshots while preserving syllable structure and tone marks.
+     * Reduces grapheme clusters while preserving syllable structure and tone marks.
      */
     fun performComposingBackspace(ic: InputConnection) {
         val currentDisplay = controller.lastSetComposingText ?: controller.compileComposingText()
@@ -121,48 +122,22 @@ class BackspaceHandler(
             return
         }
 
-        // Fast-path: When typing sequentially at the end of active composition with snapshot history
-        val isAtEnd = controller.composingCursorIndex == controller.composingRaw.length
-        if (isAtEnd && controller.imeUndoCount > 0) {
-            if (controller.imeUndoCount == 1) {
-                val lastLen = controller.lastSetComposingText?.length ?: 0
-                controller.resetComposingUI(ic, lastLen)
-                controller.clearState()
-                return
-            }
-
-            controller.popImeSnapshot()
-            val prevSnap = controller.getTopImeSnapshot()
-            if (prevSnap != null) {
-                controller.composingRaw.clear()
-                controller.composingRaw.append(prevSnap.composingRaw)
-                controller.composingCursorIndex = prevSnap.composingCursorIndex
-                controller.compositionOwnership = prevSnap.ownership
-                controller.inputEngine.restoreSnapshot(prevSnap.composerSnapshot)
-                replaceComposingText(ic, prevSnap.displayText)
-                if (controller.composingStartInEditor >= 0) {
-                    val newCursor = controller.composingStartInEditor + prevSnap.displayCursorIndex
-                    controller.moveCursorTo(ic, newCursor)
-                }
-                return
-            }
-        }
-
-        // Determine exact cursor position in display text
+        // Gboard / Laban Key style: backspace removes the preceding Unicode grapheme
+        // cluster as a single unit (á -> "", nguyễn -> nguyễ -> ...).
+        // VietnameseEditReducer re-derives the syllable state from the reduced display.
         val cursorInDisplay = VietnameseCursorMapper.rawToDisplay(
             raw = controller.composingRaw.toString(),
             rawCursor = controller.composingCursorIndex,
-            ownership = controller.compositionOwnership,
+            isVietnamese = controller.isVietnamese,
             options = controller.inputEngine.options
         )
 
         val result = VietnameseEditReducer.reduceBackspace(
             currentDisplay = currentDisplay,
             cursorInDisplay = cursorInDisplay,
-            currentOwnership = controller.compositionOwnership,
+            currentOwnership = if (controller.isVietnamese) CompositionMode.VIETNAMESE else CompositionMode.LITERAL,
             options = controller.inputEngine.options
         )
-
         applyEditResult(ic, result)
     }
 
@@ -183,14 +158,14 @@ class BackspaceHandler(
         val cursorInDisplay = VietnameseCursorMapper.rawToDisplay(
             raw = controller.composingRaw.toString(),
             rawCursor = controller.composingCursorIndex,
-            ownership = controller.compositionOwnership,
+            isVietnamese = controller.isVietnamese,
             options = controller.inputEngine.options
         )
 
         val result = VietnameseEditReducer.reduceDeleteForward(
             currentDisplay = currentDisplay,
             cursorInDisplay = cursorInDisplay,
-            currentOwnership = controller.compositionOwnership,
+            currentOwnership = if (controller.isVietnamese) CompositionMode.VIETNAMESE else CompositionMode.LITERAL,
             options = controller.inputEngine.options
         )
 
@@ -235,49 +210,21 @@ class BackspaceHandler(
 
         controller.composingRaw.clear()
         controller.composingRaw.append(result.canonicalRaw)
-        controller.compositionOwnership = result.ownership
+        controller.isVietnamese = (result.ownership == CompositionMode.VIETNAMESE)
         controller.composingCursorIndex = VietnameseCursorMapper.displayToRaw(
             raw = result.canonicalRaw,
             display = result.display,
             displayOffset = result.cursorInDisplay,
-            ownership = result.ownership,
+            isVietnamese = (result.ownership == CompositionMode.VIETNAMESE),
             options = controller.inputEngine.options
         )
 
-        if (result.ownership == CompositionOwnership.ADOPTED_VIETNAMESE && result.parsed != null) {
-            controller.inputEngine.loadAdoptedSyllable(result.syllableState, result.canonicalRaw, result.snapshots)
+        if (result.ownership == CompositionMode.VIETNAMESE) {
+            controller.inputEngine.loadSyllable(result.syllableState, true)
         } else {
-            controller.inputEngine.loadLiteral(result.display)
-        }
-
-        controller.imeUndoCount = 0
-        if (result.snapshots.isNotEmpty()) {
-            val runningRaw = StringBuilder()
-            for (snapIdx in result.snapshots.indices) {
-                val snap = result.snapshots[snapIdx]
-                if (snapIdx < result.canonicalRaw.length) {
-                    runningRaw.append(result.canonicalRaw[snapIdx])
-                }
-                controller.pushImeSnapshot(
-                    raw = runningRaw.toString(),
-                    cursor = runningRaw.length,
-                    shift = controller.activeComposingShiftState,
-                    snap = snap,
-                    displayCursor = snap.displayText.length
-                )
-            }
-        } else {
-            val snap = VietnameseComposer.ComposerSnapshot(
-                result.syllableState,
-                result.display,
-                result.ownership
-            )
-            controller.pushImeSnapshot(
-                raw = result.canonicalRaw,
-                cursor = controller.composingCursorIndex,
-                shift = controller.activeComposingShiftState,
-                snap = snap,
-                displayCursor = result.cursorInDisplay
+            controller.inputEngine.loadSyllable(
+                VietnameseComposer.SyllableState(rawSuffix = result.display),
+                false
             )
         }
 

@@ -192,16 +192,12 @@ class TraditionalEditPadView @JvmOverloads constructor(
     private fun drawKey(canvas: Canvas, key: Key) {
         val isPressed = key.isPressed
         val scale = if (isPressed) 0.96f else 1.0f
-        val w = key.rect.width()
-        val h = key.rect.height()
-        val cx = key.rect.centerX()
-        val cy = key.rect.centerY()
-
-        drawRect.set(
-            cx - w * scale / 2f,
-            cy - h * scale / 2f,
-            cx + w * scale / 2f,
-            cy + h * scale / 2f
+        computeScaledRect(
+            cx = key.rect.centerX(),
+            cy = key.rect.centerY(),
+            w = key.rect.width(),
+            h = key.rect.height(),
+            scale = scale
         )
 
         val bgPaintColor = when {

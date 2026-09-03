@@ -157,27 +157,27 @@ object EditedVietnameseRecognizer {
     }
 
     /**
-     * Classifies a candidate word into CompositionOwnership:
-     * - ADOPTED_VIETNAMESE: valid, confident Vietnamese syllable structure, safe to recompose.
-     * - EDITED_LITERAL: literal or non-standard structure, protect from unintended Telex mutations.
+     * Classifies a candidate word into CompositionMode:
+     * - VIETNAMESE: valid, confident Vietnamese syllable structure, safe to recompose.
+     * - LITERAL: literal or non-standard structure, protect from unintended Telex mutations.
      */
-    fun classify(word: String, options: EngineOptions = EngineOptions()): CompositionOwnership {
-        if (word.isEmpty()) return CompositionOwnership.LIVE_VIETNAMESE
+    fun classify(word: String, options: EngineOptions = EngineOptions()): CompositionMode {
+        if (word.isEmpty()) return CompositionMode.VIETNAMESE
 
         val nfcWord = VietnameseUnicode.normalizeNfc(word)
         
         // 1. Check for suspicious disjoint vowel clusters (V-C-V like "ana", "omo")
         if (hasDisjointVowelClusters(nfcWord)) {
-            return CompositionOwnership.EDITED_LITERAL
+            return CompositionMode.LITERAL
         }
 
         // 2. Run lexical parser analysis
         val analysis = VietnameseLexicalParser.analyze(nfcWord, options)
         if (!analysis.isValid) {
-            return CompositionOwnership.EDITED_LITERAL
+            return CompositionMode.LITERAL
         }
 
-        val parsed = analysis.parsed ?: return CompositionOwnership.EDITED_LITERAL
+        val parsed = analysis.parsed ?: return CompositionMode.LITERAL
 
         // 3. Phonotactic / Coda / Structure conservative checks:
         val onsetLower = parsed.onset.lowercase()
@@ -185,38 +185,38 @@ object EditedVietnameseRecognizer {
 
         // If coda is present, it MUST be one of the valid Vietnamese codas
         if (codaLower.isNotEmpty() && codaLower !in VietnameseLexicon.CODAS) {
-            return CompositionOwnership.EDITED_LITERAL
+            return CompositionMode.LITERAL
         }
 
         // Onset 'w' without tone or special handling (e.g. "war", "warm", "work", "wor", "word")
         // In Vietnamese, 'w' is a Telex shortcut key for 'ư', but as an onset in a completed edited word, it is literal.
         if (onsetLower == "w" || onsetLower.startsWith("w")) {
-            return CompositionOwnership.EDITED_LITERAL
+            return CompositionMode.LITERAL
         }
 
         // Non-Vietnamese letters in completed word
         val wordLower = nfcWord.lowercase()
         if (wordLower.any { it in setOf('f', 'j', 'z') }) {
-            return CompositionOwnership.EDITED_LITERAL
+            return CompositionMode.LITERAL
         }
 
         // If rawSuffix is not empty, it's not a complete Vietnamese syllable
         if (parsed.rawSuffix.isNotEmpty()) {
-            return CompositionOwnership.EDITED_LITERAL
+            return CompositionMode.LITERAL
         }
 
         // Stop consonants ("c", "ch", "p", "t") can only carry ACUTE (sắc) or DOT (nặng) in Vietnamese
         if (codaLower in setOf("c", "ch", "p", "t")) {
             if (parsed.tone != Tone.NONE && parsed.tone != Tone.ACUTE && parsed.tone != Tone.DOT) {
-                return CompositionOwnership.EDITED_LITERAL
+                return CompositionMode.LITERAL
             }
         }
 
-        return CompositionOwnership.ADOPTED_VIETNAMESE
+        return CompositionMode.VIETNAMESE
     }
 
     fun canRecompose(word: String, options: EngineOptions = EngineOptions()): Boolean {
-        return classify(word, options) == CompositionOwnership.ADOPTED_VIETNAMESE
+        return classify(word, options) == CompositionMode.VIETNAMESE
     }
 }
 
@@ -224,9 +224,9 @@ object EditedVietnameseRecognizer {
  * Unified reducer for Vietnamese backspace / delete mutations.
  * Single Source of Truth for:
  * - Grapheme cluster deletion
- * - Ownership transitions (e.g. preserving EDITED_LITERAL on delete)
+ * - Mode transitions (e.g. preserving LITERAL on delete)
  * - Syllable re-parsing & canonical keystroke generation
- * - Step snapshot generation
+ * - Syllable re-parsing
  */
 object VietnameseEditReducer {
 
@@ -234,10 +234,9 @@ object VietnameseEditReducer {
         val display: String,
         val cursorInDisplay: Int,
         val canonicalRaw: String,
-        val ownership: CompositionOwnership,
+        val ownership: CompositionMode,
         val parsed: VietnameseLexicalParser.ParsedSyllable?,
-        val syllableState: VietnameseComposer.SyllableState,
-        val snapshots: List<VietnameseComposer.ComposerSnapshot>
+        val syllableState: VietnameseComposer.SyllableState
     )
 
     /**
@@ -247,7 +246,7 @@ object VietnameseEditReducer {
     fun reduceBackspace(
         currentDisplay: String,
         cursorInDisplay: Int,
-        currentOwnership: CompositionOwnership,
+        currentOwnership: CompositionMode,
         options: EngineOptions
     ): EditResult {
         if (currentDisplay.isEmpty()) {
@@ -265,7 +264,7 @@ object VietnameseEditReducer {
     fun reduceDeleteForward(
         currentDisplay: String,
         cursorInDisplay: Int,
-        currentOwnership: CompositionOwnership,
+        currentOwnership: CompositionMode,
         options: EngineOptions
     ): EditResult {
         if (currentDisplay.isEmpty()) {
@@ -281,17 +280,16 @@ object VietnameseEditReducer {
             display = "",
             cursorInDisplay = 0,
             canonicalRaw = "",
-            ownership = CompositionOwnership.LIVE_VIETNAMESE,
+            ownership = CompositionMode.VIETNAMESE,
             parsed = null,
-            syllableState = VietnameseComposer.SyllableState(),
-            snapshots = emptyList()
+            syllableState = VietnameseComposer.SyllableState()
         )
     }
 
     private fun reduceModifiedText(
         newDisplay: String,
         newCursor: Int,
-        currentOwnership: CompositionOwnership,
+        currentOwnership: CompositionMode,
         options: EngineOptions
     ): EditResult {
         if (newDisplay.isEmpty()) {
@@ -299,74 +297,58 @@ object VietnameseEditReducer {
         }
 
         // Ownership transition rule:
-        // A literal string remains EDITED_LITERAL when deleting characters,
+        // A literal string remains LITERAL when deleting characters,
         // unless deleting at the end produces a confident, valid Vietnamese syllable.
-        if (currentOwnership == CompositionOwnership.EDITED_LITERAL) {
+        if (currentOwnership == CompositionMode.LITERAL) {
             if (newCursor == newDisplay.length && EditedVietnameseRecognizer.canRecompose(newDisplay, options)) {
                 val analysis = VietnameseLexicalParser.analyze(newDisplay, options)
                 if (analysis.isValid) {
-                    val (_, snaps) = VietnameseSnapshotBuilder.generate(analysis, options)
                     return EditResult(
                         display = analysis.display,
                         cursorInDisplay = newCursor,
                         canonicalRaw = analysis.canonicalRaw,
-                        ownership = CompositionOwnership.ADOPTED_VIETNAMESE,
+                        ownership = CompositionMode.VIETNAMESE,
                         parsed = analysis.parsed,
-                        syllableState = analysis.syllableState,
-                        snapshots = snaps
+                        syllableState = analysis.syllableState
                     )
                 }
             }
 
             val literalState = VietnameseComposer.SyllableState(rawSuffix = newDisplay)
-            val literalSnap = VietnameseComposer.ComposerSnapshot(
-                literalState,
-                newDisplay,
-                CompositionOwnership.EDITED_LITERAL
-            )
             return EditResult(
                 display = newDisplay,
                 cursorInDisplay = newCursor,
                 canonicalRaw = newDisplay,
-                ownership = CompositionOwnership.EDITED_LITERAL,
+                ownership = CompositionMode.LITERAL,
                 parsed = null,
-                syllableState = literalState,
-                snapshots = listOf(literalSnap)
+                syllableState = literalState
             )
         }
 
         val ownership = EditedVietnameseRecognizer.classify(newDisplay, options)
-        if (ownership == CompositionOwnership.ADOPTED_VIETNAMESE) {
+        if (ownership == CompositionMode.VIETNAMESE) {
             val analysis = VietnameseLexicalParser.analyze(newDisplay, options)
             if (analysis.isValid) {
-                val (_, snaps) = VietnameseSnapshotBuilder.generate(analysis, options)
                 return EditResult(
                     display = analysis.display,
                     cursorInDisplay = newCursor,
                     canonicalRaw = analysis.canonicalRaw,
-                    ownership = CompositionOwnership.ADOPTED_VIETNAMESE,
+                    ownership = CompositionMode.VIETNAMESE,
                     parsed = analysis.parsed,
-                    syllableState = analysis.syllableState,
-                    snapshots = snaps
+                    syllableState = analysis.syllableState
                 )
             }
         }
 
-        // EDITED_LITERAL fallback
+        // LITERAL fallback
         val literalState = VietnameseComposer.SyllableState(rawSuffix = newDisplay)
-        val literalSnap = VietnameseComposer.ComposerSnapshot(
-            literalState,
-            newDisplay,
-            CompositionOwnership.EDITED_LITERAL
-        )
         return EditResult(
             display = newDisplay,
             cursorInDisplay = newCursor,
             canonicalRaw = newDisplay,
-            ownership = CompositionOwnership.EDITED_LITERAL,
+            ownership = CompositionMode.LITERAL,
             parsed = null,
-            syllableState = literalState,
-            snapshots = listOf(literalSnap)
+            syllableState = literalState
         )
     }
 }

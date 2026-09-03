@@ -79,10 +79,11 @@ class TraditionalTpadView @JvmOverloads constructor(
 
     private val longPressRunnable = Runnable {
         activeTouchedKey?.let { key ->
-            if (key.longPressOptions != null && key.longPressOptions.isNotEmpty()) {
+            val opts = key.longPressOptions
+            if (opts != null && opts.isNotEmpty()) {
                 isLongPressed = true
                 activePopupOptionIndex = key.longPressDefaultIndex
-                keyPopup.showLongPress(this, key.longPressOptions, activePopupOptionIndex, isDark, currentTheme, key.rect)
+                keyPopup.showLongPress(this, opts, activePopupOptionIndex, isDark, currentTheme, key.rect)
                 invalidate()
             }
         }
@@ -161,7 +162,7 @@ class TraditionalTpadView @JvmOverloads constructor(
         } else if (isDatetime) {
             keysList.add(Key(code = "-", label = "-", secondaryLabel = "/", longPressOptions = listOf("-", "/")))
         } else {
-            keysList.add(Key(code = ".", label = ".", longPressOptions = listOf(".", "-", "?", "!", ";", ":")))
+            keysList.add(Key(code = ".", label = ".", secondaryLabel = "-", longPressOptions = listOf(".", "-", "?", "!", ";", ":")))
         }
 
         // Row 3
@@ -284,14 +285,15 @@ class TraditionalTpadView @JvmOverloads constructor(
             canvas.drawText(key.label, drawRect.centerX(), baseline, textPaint)
 
             // Draw secondary label if present
-            if (key.secondaryLabel != null) {
+            val tpadSec = key.secondaryLabel
+            if (tpadSec != null) {
                 textPaint.textSize = 9f * density
                 textPaint.color = subTextColor
                 val secX = drawRect.right - 5f * density
                 val secY = drawRect.top + drawRect.height() * 0.28f
-                val textWidth = textPaint.measureText(key.secondaryLabel)
+                val textWidth = textPaint.measureText(tpadSec)
                 val secCenterX = secX - textWidth / 2f
-                canvas.drawText(key.secondaryLabel, secCenterX, secY, textPaint)
+                canvas.drawText(tpadSec, secCenterX, secY, textPaint)
             }
         }
     }
@@ -389,8 +391,9 @@ class TraditionalTpadView @JvmOverloads constructor(
                 if (trackedKey != null) {
                     trackedKey.isPressed = false
                     if (isLongPressed) {
-                        if (trackedKey.longPressOptions != null && activePopupOptionIndex in trackedKey.longPressOptions.indices) {
-                            val selectedOption = trackedKey.longPressOptions[activePopupOptionIndex]
+                        val lpOpts = trackedKey.longPressOptions
+                        if (lpOpts != null && activePopupOptionIndex in lpOpts.indices) {
+                            val selectedOption = lpOpts[activePopupOptionIndex]
                             onKey?.invoke(selectedOption)
                         }
                         keyPopup.dismiss()

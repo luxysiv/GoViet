@@ -1185,31 +1185,31 @@ class VietnameseInputEngineTest {
 
     @Test
     fun testEditedVietnameseRecognizerClassification() {
-        assertEquals(CompositionOwnership.EDITED_LITERAL, EditedVietnameseRecognizer.classify("warm"))
-        assertEquals(CompositionOwnership.EDITED_LITERAL, EditedVietnameseRecognizer.classify("war"))
-        assertEquals(CompositionOwnership.EDITED_LITERAL, EditedVietnameseRecognizer.classify("work"))
-        assertEquals(CompositionOwnership.EDITED_LITERAL, EditedVietnameseRecognizer.classify("wor"))
-        assertEquals(CompositionOwnership.EDITED_LITERAL, EditedVietnameseRecognizer.classify("facebook"))
-        assertEquals(CompositionOwnership.EDITED_LITERAL, EditedVietnameseRecognizer.classify("xyz"))
-        assertEquals(CompositionOwnership.EDITED_LITERAL, EditedVietnameseRecognizer.classify("omo"))
-        assertEquals(CompositionOwnership.EDITED_LITERAL, EditedVietnameseRecognizer.classify("ana"))
+        assertEquals(CompositionMode.LITERAL, EditedVietnameseRecognizer.classify("warm"))
+        assertEquals(CompositionMode.LITERAL, EditedVietnameseRecognizer.classify("war"))
+        assertEquals(CompositionMode.LITERAL, EditedVietnameseRecognizer.classify("work"))
+        assertEquals(CompositionMode.LITERAL, EditedVietnameseRecognizer.classify("wor"))
+        assertEquals(CompositionMode.LITERAL, EditedVietnameseRecognizer.classify("facebook"))
+        assertEquals(CompositionMode.LITERAL, EditedVietnameseRecognizer.classify("xyz"))
+        assertEquals(CompositionMode.LITERAL, EditedVietnameseRecognizer.classify("omo"))
+        assertEquals(CompositionMode.LITERAL, EditedVietnameseRecognizer.classify("ana"))
 
-        assertEquals(CompositionOwnership.ADOPTED_VIETNAMESE, EditedVietnameseRecognizer.classify("việt"))
-        assertEquals(CompositionOwnership.ADOPTED_VIETNAMESE, EditedVietnameseRecognizer.classify("toán"))
-        assertEquals(CompositionOwnership.ADOPTED_VIETNAMESE, EditedVietnameseRecognizer.classify("thương"))
-        assertEquals(CompositionOwnership.ADOPTED_VIETNAMESE, EditedVietnameseRecognizer.classify("nghiêng"))
-        assertEquals(CompositionOwnership.ADOPTED_VIETNAMESE, EditedVietnameseRecognizer.classify("bàn"))
-        assertEquals(CompositionOwnership.ADOPTED_VIETNAMESE, EditedVietnameseRecognizer.classify("chào"))
+        assertEquals(CompositionMode.VIETNAMESE, EditedVietnameseRecognizer.classify("việt"))
+        assertEquals(CompositionMode.VIETNAMESE, EditedVietnameseRecognizer.classify("toán"))
+        assertEquals(CompositionMode.VIETNAMESE, EditedVietnameseRecognizer.classify("thương"))
+        assertEquals(CompositionMode.VIETNAMESE, EditedVietnameseRecognizer.classify("nghiêng"))
+        assertEquals(CompositionMode.VIETNAMESE, EditedVietnameseRecognizer.classify("bàn"))
+        assertEquals(CompositionMode.VIETNAMESE, EditedVietnameseRecognizer.classify("chào"))
     }
 
     @Test
     fun testWarmBackspaceWarnScenarioDoesNotProduceUan() {
         // Reproduce typing/adopting "warm", then backspace (deleting 'm'), then typing 'n' -> must be "warn", NOT "ửan"
         engine.reset()
-        assertEquals(CompositionOwnership.EDITED_LITERAL, EditedVietnameseRecognizer.classify("warm"))
+        assertEquals(CompositionMode.LITERAL, EditedVietnameseRecognizer.classify("warm"))
 
         // Adopt/Hold "warm" as EDITED_LITERAL
-        engine.ownership = CompositionOwnership.EDITED_LITERAL
+        engine.isVietnamese = false
         engine.processKey('w')
         engine.processKey('a')
         engine.processKey('r')
@@ -1218,7 +1218,7 @@ class VietnameseInputEngineTest {
 
         val backspaced = engine.backspace()
         assertEquals("war", backspaced)
-        assertEquals(CompositionOwnership.EDITED_LITERAL, engine.ownership)
+        assertEquals(false, engine.isVietnamese)
 
         engine.processKey('n')
         assertEquals("warn", engine.toDisplayString())
@@ -1232,7 +1232,7 @@ class VietnameseInputEngineTest {
     fun testWorkBackspaceWordScenario() {
         // Reproduce typing/adopting "work", then backspace (deleting 'k'), then typing 'd' -> must be "word", NOT "wơd"
         engine.reset()
-        engine.ownership = CompositionOwnership.EDITED_LITERAL
+        engine.isVietnamese = false
         engine.processKey('w')
         engine.processKey('o')
         engine.processKey('r')
@@ -1241,7 +1241,7 @@ class VietnameseInputEngineTest {
 
         val backspaced = engine.backspace()
         assertEquals("wor", backspaced)
-        assertEquals(CompositionOwnership.EDITED_LITERAL, engine.ownership)
+        assertEquals(false, engine.isVietnamese)
 
         engine.processKey('d')
         assertEquals("word", engine.toDisplayString())
@@ -1348,24 +1348,24 @@ class VietnameseInputEngineTest {
         val options = EngineOptions()
 
         // 1. Vietnamese word: "tiếng" at cursor 5 -> "tiến"
-        val res1 = VietnameseEditReducer.reduceBackspace("tiếng", 5, CompositionOwnership.LIVE_VIETNAMESE, options)
+        val res1 = VietnameseEditReducer.reduceBackspace("tiếng", 5, CompositionMode.VIETNAMESE, options)
         assertEquals("tiến", res1.display)
         assertEquals(4, res1.cursorInDisplay)
-        assertEquals(CompositionOwnership.ADOPTED_VIETNAMESE, res1.ownership)
+        assertEquals(CompositionMode.VIETNAMESE, res1.ownership)
 
         // 2. Literal word: "warm" at cursor 4 -> "war"
-        val res2 = VietnameseEditReducer.reduceBackspace("warm", 4, CompositionOwnership.EDITED_LITERAL, options)
+        val res2 = VietnameseEditReducer.reduceBackspace("warm", 4, CompositionMode.LITERAL, options)
         assertEquals("war", res2.display)
         assertEquals(3, res2.cursorInDisplay)
-        assertEquals(CompositionOwnership.EDITED_LITERAL, res2.ownership)
+        assertEquals(CompositionMode.LITERAL, res2.ownership)
 
         // 3. Middle cursor: "chuyển" cursor at 3 ("chu|yển") -> "ch|yển"
-        val res3 = VietnameseEditReducer.reduceBackspace("chuyển", 3, CompositionOwnership.LIVE_VIETNAMESE, options)
+        val res3 = VietnameseEditReducer.reduceBackspace("chuyển", 3, CompositionMode.VIETNAMESE, options)
         assertEquals("chyển", res3.display)
         assertEquals(2, res3.cursorInDisplay)
 
         // 4. Forward delete: "chuyển" cursor at 2 ("ch|uyển") -> delete forward 'u' -> "ch|yển"
-        val res4 = VietnameseEditReducer.reduceDeleteForward("chuyển", 2, CompositionOwnership.LIVE_VIETNAMESE, options)
+        val res4 = VietnameseEditReducer.reduceDeleteForward("chuyển", 2, CompositionMode.VIETNAMESE, options)
         assertEquals("chyển", res4.display)
         assertEquals(2, res4.cursorInDisplay)
     }
@@ -1451,8 +1451,8 @@ class VietnameseInputEngineTest {
         assertEquals(7, mapping.displayToRaw(6))
 
         // Literal mapping
-        assertEquals(3, VietnameseCursorMapper.displayToRaw("test", "test", 3, ownership = CompositionOwnership.EDITED_LITERAL))
-        assertEquals(3, VietnameseCursorMapper.rawToDisplay("test", 3, ownership = CompositionOwnership.EDITED_LITERAL))
+        assertEquals(3, VietnameseCursorMapper.displayToRaw("test", "test", 3, ownership = CompositionMode.LITERAL))
+        assertEquals(3, VietnameseCursorMapper.rawToDisplay("test", 3, ownership = CompositionMode.LITERAL))
     }
 
     @Test
@@ -1462,7 +1462,7 @@ class VietnameseInputEngineTest {
         // 1. Valid Vietnamese word: "đường"
         val resDuong = VietnameseLexicalParser.analyze("đường", options)
         assertTrue(resDuong.isValid)
-        assertEquals(CompositionOwnership.ADOPTED_VIETNAMESE, resDuong.ownership)
+        assertEquals(CompositionMode.VIETNAMESE, resDuong.ownership)
         assertEquals("đường", resDuong.display)
         assertEquals("dduwongf", resDuong.canonicalRaw.lowercase())
         assertEquals("đ", resDuong.parsed?.onset)
@@ -1478,7 +1478,7 @@ class VietnameseInputEngineTest {
         // 3. Non-Vietnamese / Literal word: "facebook"
         val resForeign = VietnameseLexicalParser.analyze("facebook", options)
         assertFalse(resForeign.isValid)
-        assertEquals(CompositionOwnership.EDITED_LITERAL, resForeign.ownership)
+        assertEquals(CompositionMode.LITERAL, resForeign.ownership)
         assertEquals("facebook", resForeign.canonicalRaw)
         assertEquals("facebook", resForeign.display)
 
@@ -1544,15 +1544,15 @@ class VietnameseInputEngineTest {
         // Test adopting "thương", backspacing to "thươn", then typing 'g' -> "thương"
         val analysis = VietnameseLexicalParser.analyze("thương")
         assertTrue(analysis.isValid)
-        assertEquals(CompositionOwnership.ADOPTED_VIETNAMESE, EditedVietnameseRecognizer.classify("thương"))
+        assertEquals(CompositionMode.VIETNAMESE, EditedVietnameseRecognizer.classify("thương"))
 
         val (canonical, snaps) = VietnameseSnapshotBuilder.generate(analysis, engine.options)
-        engine.loadAdoptedSyllable(analysis.syllableState, canonical, snaps)
+        engine.loadSyllable(analysis.syllableState, true)
         assertEquals("thương", engine.toDisplayString())
 
         val backspaced = engine.backspace()
         assertEquals("thươn", backspaced)
-        assertEquals(CompositionOwnership.ADOPTED_VIETNAMESE, engine.ownership)
+        assertEquals(true, engine.isVietnamese)
 
         engine.processKey('g')
         assertEquals("thương", engine.toDisplayString())
@@ -1586,7 +1586,7 @@ class VietnameseInputEngineTest {
         assertEquals("tieengs", canonical)
         assertTrue(snaps.size >= 6)
 
-        engine.loadAdoptedSyllable(snaps.last().state, canonical, snaps)
+        engine.loadSyllable(snaps.last().state, true)
         assertEquals("tiếng", engine.toDisplayString())
 
         // Backspace step by step using VietnameseEditReducer
@@ -1601,7 +1601,7 @@ class VietnameseInputEngineTest {
     fun testWordAdoptionToneModification() {
         // Adopt "tiên", add tone 's' -> "tiến"
         val (canonical, snaps) = VietnameseSnapshotBuilder.generate("tiên", engine.options)
-        engine.loadAdoptedSyllable(snaps.last().state, canonical, snaps)
+        engine.loadSyllable(snaps.last().state, true)
         assertEquals("tiên", engine.toDisplayString())
 
         engine.processKey('s')
@@ -1709,13 +1709,13 @@ class VietnameseInputEngineTest {
         val (canonical, snaps) = VietnameseSnapshotBuilder.generate(analysisVie, EngineOptions())
         assertTrue(snaps.isNotEmpty())
         engine.reset()
-        engine.loadAdoptedSyllable(snaps.last().state, canonical, snaps)
+        engine.loadSyllable(snaps.last().state, true)
         assertEquals("việt", engine.processKey('t').text)
 
         // Test onset "đ" + typing "ang" -> "đang"
         val (canonicalD, snapsD) = VietnameseSnapshotBuilder.generate(analysisD, EngineOptions())
         engine.reset()
-        engine.loadAdoptedSyllable(snapsD.last().state, canonicalD, snapsD)
+        engine.loadSyllable(snapsD.last().state, true)
         assertEquals("đa", engine.processKey('a').text)
         assertEquals("đan", engine.processKey('n').text)
         assertEquals("đang", engine.processKey('g').text)
@@ -1723,39 +1723,43 @@ class VietnameseInputEngineTest {
         // Test "đườn" + typing 'g' -> "đường"
         val (canonicalDuon2, snapsDuon) = VietnameseSnapshotBuilder.generate(analysisDuon, EngineOptions())
         engine.reset()
-        engine.loadAdoptedSyllable(snapsDuon.last().state, canonicalDuon2, snapsDuon)
+        engine.loadSyllable(snapsDuon.last().state, true)
         assertEquals("đường", engine.processKey('g').text)
 
         // Test adopting literal / foreign / suggestion words like "confirm" and continuing typing
-        val (canonicalConfirm, snapConfirm) = engine.syncStateFromRaw("confirm", CompositionOwnership.EDITED_LITERAL)
+        val syncBuf1 = VietnameseComposer.SyncResult()
+        engine.syncStateFromRaw("confirm", CompositionMode.LITERAL, syncBuf1)
+        val canonicalConfirm = syncBuf1.displayText
         assertEquals("confirm", canonicalConfirm)
-        val (canonicalConfirmF, _) = engine.syncStateFromRaw("confirmf", CompositionOwnership.EDITED_LITERAL)
+        val syncBuf2 = VietnameseComposer.SyncResult()
+        engine.syncStateFromRaw("confirmf", CompositionMode.LITERAL, syncBuf2)
+        val canonicalConfirmF = syncBuf2.displayText
         assertEquals("confirmf", canonicalConfirmF)
 
-        // Test Backspace on "thee" in EDITED_LITERAL -> "the" promotes to ADOPTED_VIETNAMESE -> typing 'e' -> "thê"
+        // Test Backspace on "thee" in LITERAL -> "the" promotes to VIETNAMESE -> typing 'e' -> "thê"
         val reducedThee = VietnameseEditReducer.reduceBackspace(
             currentDisplay = "thee",
             cursorInDisplay = 4,
-            currentOwnership = CompositionOwnership.EDITED_LITERAL,
+            currentOwnership = CompositionMode.LITERAL,
             options = EngineOptions()
         )
         assertEquals("the", reducedThee.display)
-        assertEquals(CompositionOwnership.ADOPTED_VIETNAMESE, reducedThee.ownership)
+        assertEquals(CompositionMode.VIETNAMESE, reducedThee.ownership)
         engine.reset()
-        engine.loadAdoptedSyllable(reducedThee.syllableState, reducedThee.canonicalRaw, reducedThee.snapshots)
+        engine.loadSyllable(reducedThee.syllableState, true)
         assertEquals("thê", engine.processKey('e').text)
 
         // Test Backspace on "theo" -> "the" -> typing 'e' -> "thê"
         val reducedTheo = VietnameseEditReducer.reduceBackspace(
             currentDisplay = "theo",
             cursorInDisplay = 4,
-            currentOwnership = CompositionOwnership.LIVE_VIETNAMESE,
+            currentOwnership = CompositionMode.VIETNAMESE,
             options = EngineOptions()
         )
         assertEquals("the", reducedTheo.display)
-        assertEquals(CompositionOwnership.ADOPTED_VIETNAMESE, reducedTheo.ownership)
+        assertEquals(CompositionMode.VIETNAMESE, reducedTheo.ownership)
         engine.reset()
-        engine.loadAdoptedSyllable(reducedTheo.syllableState, reducedTheo.canonicalRaw, reducedTheo.snapshots)
+        engine.loadSyllable(reducedTheo.syllableState, true)
         assertEquals("thê", engine.processKey('e').text)
     }
 }

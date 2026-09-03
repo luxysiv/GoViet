@@ -21,6 +21,7 @@ class KeyPopupWindow(private val context: Context) {
     }
 
     private val popupView = PopupView(context)
+    private var cachedAnchorView: View? = null
 
     init {
         popupWindow.contentView = popupView
@@ -33,22 +34,12 @@ class KeyPopupWindow(private val context: Context) {
 
     private var currentMode: Mode = Mode.PREVIEW
 
-    fun showPreview(
-        anchorView: View,
-        label: String,
-        isDark: Boolean,
-        theme: KeyboardTheme,
-        keyRect: RectF? = null
-    ) {
-        currentMode = Mode.PREVIEW
-        popupView.setPreviewData(label, isDark, theme)
+    private data class PopupPosition(val x: Int, val y: Int, val width: Int, val height: Int)
 
+    private fun computePosition(anchorView: View, keyRect: RectF?, widthDp: Int): PopupPosition {
         val density = context.density
-        val width = (66 * density).toInt()
+        val width = (widthDp * density).toInt()
         val height = (72 * density).toInt()
-
-        popupWindow.width = width
-        popupWindow.height = height
 
         val location = IntArray(2)
         anchorView.getLocationInWindow(location)
@@ -62,12 +53,7 @@ class KeyPopupWindow(private val context: Context) {
         val screenWidth = context.resources.displayMetrics.widthPixels
         val margin = (8 * density).toInt()
 
-        var left = idealLeft
-        if (left < margin) {
-            left = margin.toFloat()
-        } else if (left + width > screenWidth - margin) {
-            left = (screenWidth - margin - width).toFloat()
-        }
+        val left = idealLeft.coerceIn(margin.toFloat(), (screenWidth - margin - width).toFloat())
 
         val x = left.toInt()
         val y = if (keyRect != null) {
@@ -75,6 +61,25 @@ class KeyPopupWindow(private val context: Context) {
         } else {
             location[1] - (70 * density).toInt()
         }
+
+        return PopupPosition(x, y, width, height)
+    }
+
+    fun showPreview(
+        anchorView: View,
+        label: String,
+        isDark: Boolean,
+        theme: KeyboardTheme,
+        keyRect: RectF? = null
+    ) {
+        currentMode = Mode.PREVIEW
+        popupView.setPreviewData(label, isDark, theme)
+        cachedAnchorView = anchorView
+
+        val (x, y, width, height) = computePosition(anchorView, keyRect, 66)
+
+        popupWindow.width = width
+        popupWindow.height = height
 
         if (popupWindow.isShowing) {
             popupWindow.update(x, y, width, height)
@@ -93,43 +98,13 @@ class KeyPopupWindow(private val context: Context) {
     ) {
         currentMode = Mode.LONG_PRESS
         popupView.setLongPressData(options, hoveredIdx, isDark, theme)
+        cachedAnchorView = anchorView
 
-        val density = context.density
-        val width = if (options.size <= 1) {
-            (66 * density).toInt()
-        } else {
-            ((44 * options.size) * density).toInt()
-        }
-        val height = (72 * density).toInt()
+        val (x, y, width, height) = computePosition(anchorView, keyRect,
+            if (options.size <= 1) 66 else 44 * options.size)
 
         popupWindow.width = width
         popupWindow.height = height
-
-        val location = IntArray(2)
-        anchorView.getLocationInWindow(location)
-
-        val keyCenterX = if (keyRect != null) {
-            location[0] + keyRect.centerX()
-        } else {
-            location[0] + anchorView.width / 2f
-        }
-        val idealLeft = keyCenterX - width / 2f
-        val screenWidth = context.resources.displayMetrics.widthPixels
-        val margin = (8 * density).toInt()
-
-        var left = idealLeft
-        if (left < margin) {
-            left = margin.toFloat()
-        } else if (left + width > screenWidth - margin) {
-            left = (screenWidth - margin - width).toFloat()
-        }
-
-        val x = left.toInt()
-        val y = if (keyRect != null) {
-            (location[1] + keyRect.top - height - 4f * density).toInt()
-        } else {
-            location[1] - (70 * density).toInt()
-        }
 
         if (popupWindow.isShowing) {
             popupWindow.update(x, y, width, height)

@@ -91,6 +91,7 @@ abstract class BaseKeyGridView @JvmOverloads constructor(
         activeAccentColor = activeAccentColor,
         isDark = isDark
     )
+    private var themeVersion: Long = 0L
 
     open var keyStyle: Int = 0
         set(value) {
@@ -136,30 +137,53 @@ abstract class BaseKeyGridView @JvmOverloads constructor(
             showKeyBorders = (keyStyle == 0)
             changed = true
         }
-        if (this.currentTheme != theme ||
-            this.isDark != theme.isDark ||
-            this.textColor != theme.textColor ||
-            this.subTextColor != theme.subTextColor ||
-            this.keyBgColor != theme.keyBgColor ||
-            this.keyPressedBgColor != theme.keyPressedBgColor ||
-            this.functionalKeyBgColor != theme.functionalKeyBgColor ||
-            this.functionalKeyPressedBgColor != theme.functionalKeyPressedBgColor ||
-            this.activeAccentColor != theme.activeAccentColor
-        ) {
-            this.textColor = theme.textColor
-            this.subTextColor = theme.subTextColor
-            this.keyBgColor = theme.keyBgColor
-            this.keyPressedBgColor = theme.keyPressedBgColor
-            this.functionalKeyBgColor = theme.functionalKeyBgColor
-            this.functionalKeyPressedBgColor = theme.functionalKeyPressedBgColor
-            this.activeAccentColor = theme.activeAccentColor
-            this.isDark = theme.isDark
-            this.currentTheme = theme
-            changed = true
-        }
-        if (changed) {
-            invalidate()
-        }
+        if (this.currentTheme == theme && !changed) return
+        this.textColor = theme.textColor
+        this.subTextColor = theme.subTextColor
+        this.keyBgColor = theme.keyBgColor
+        this.keyPressedBgColor = theme.keyPressedBgColor
+        this.functionalKeyBgColor = theme.functionalKeyBgColor
+        this.functionalKeyPressedBgColor = theme.functionalKeyPressedBgColor
+        this.activeAccentColor = theme.activeAccentColor
+        this.isDark = theme.isDark
+        this.currentTheme = theme
+        themeVersion++
+        invalidate()
+    }
+
+    protected fun computeScaledRect(
+        cx: Float, cy: Float, w: Float, h: Float, scale: Float
+    ) {
+        drawRect.set(
+            cx - w * scale / 2f,
+            cy - h * scale / 2f,
+            cx + w * scale / 2f,
+            cy + h * scale / 2f
+        )
+    }
+
+    protected fun drawKeyBackgroundScaled(
+        canvas: Canvas,
+        key: Key,
+        scale: Float = if (key.isPressed) 0.96f else 1.0f
+    ) {
+        val bgColor = if (key.isFunctional || key.isSpecialEnter) functionalKeyBgColor else keyBgColor
+        val pressedBg = if (key.isFunctional || key.isSpecialEnter) functionalKeyPressedBgColor else keyPressedBgColor
+
+        KeyRenderer.drawStandardKey(
+            canvas = canvas,
+            drawRect = drawRect,
+            shadowRect = key.shadowRect,
+            cornerRadius = keyCornerRadius,
+            density = density,
+            isDark = isDark,
+            keyStyle = keyStyle,
+            isPressed = key.isPressed,
+            isFunctional = key.isFunctional,
+            isSpecialEnter = key.isSpecialEnter,
+            bgColor = bgColor,
+            pressedBgColor = pressedBg
+        )
     }
 
     protected fun drawKeyBackground(

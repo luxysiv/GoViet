@@ -27,23 +27,19 @@ enum class Tone(val index: Int) {
 /**
  * Vietnamese composition ownership & editing modes.
  */
-enum class CompositionOwnership {
-    /**
-     * String created directly by FSM from active keystrokes.
-     * Allowed full Telex transformations.
-     */
-    LIVE_VIETNAMESE,
-
-    /**
-     * String adopted/re-parsed from editor and verified as a valid Vietnamese syllable.
-     */
-    ADOPTED_VIETNAMESE,
-
-    /**
-     * Literal string (e.g. completed literal words, codes, symbols).
-     * Protected from unintended Telex re-interpretation.
-     */
-    EDITED_LITERAL
+/**
+ * Simplified composition mode. Two modes cover all previous three ownership states:
+ * - VIETNAMESE: full Telex processing (covers both freshly-typed and adopted text).
+ * - LITERAL: raw text passthrough (no Telex mutations).
+ *
+ * The former LIVE_VIETNAMESE and ADOPTED_VIETNAMESE were functionally identical
+ * in every processing path and have been merged.
+ */
+enum class CompositionMode {
+    /** Full Telex transformations are active. */
+    VIETNAMESE,
+    /** Raw text — protected from Telex re-interpretation. */
+    LITERAL
 }
 
 /**
@@ -71,13 +67,6 @@ sealed interface CompositionResult {
      */
     data object PassThrough : CompositionResult
 }
-
-val CompositionResult.text: String
-    get() = when (this) {
-        is CompositionResult.Update -> text.toString()
-        is CompositionResult.CommitAndStartNew -> commitText + newChar
-        is CompositionResult.PassThrough -> ""
-    }
 
 /**
  * Zero-allocation result container for processKey. Callers MUST read

@@ -63,7 +63,6 @@ open class TraditionalSettingsView @JvmOverloads constructor(
         oldTone: Boolean
     ) -> Unit)? = null
     var onKeyStyleChange: ((Int) -> Unit)? = null
-    var onKeyBordersChange: ((Boolean) -> Unit)? = null
     var onThemeChange: (() -> Unit)? = null
     var onBottomPaddingChange: (() -> Unit)? = null
     var onOpenFullSettings: (() -> Unit)? = null
@@ -783,7 +782,6 @@ open class TraditionalSettingsView @JvmOverloads constructor(
                                 if (i in 0..2 && styleButtonRects[i].contains(x, y)) {
                                     keyStyle = i
                                     onKeyStyleChange?.invoke(i)
-                                    onKeyBordersChange?.invoke(i == 0)
                                     return true
                                 }
                             }

@@ -732,6 +732,21 @@ class KeyboardRootView @JvmOverloads constructor(
 }
 
 // Programmatic Top Header Layout
+private enum class DrawerButton(val id: String, val mode: String) {
+    CLIPBOARD("btn_clipboard", "CLIPBOARD"),
+    EDIT_PAD("btn_editpad", "EDIT_PAD"),
+    EMOJI("btn_emoji", "EMOJI"),
+    LANGUAGE("btn_language", "LANGUAGE"),
+    TPAD("btn_tpad", "TPAD"),
+    SETTINGS("btn_settings", "SETTINGS");
+
+    companion object {
+        val ALL = entries
+        fun toggleMode(currentMode: String, button: DrawerButton): String =
+            if (currentMode == button.mode) "QWERTY" else button.mode
+    }
+}
+
 class UnifiedTopHeaderView(context: Context, private val rootView: KeyboardRootView) : View(context) {
 
     enum class HeaderMode { SYMBOL_PICKER, EMOJI, STANDARD }
@@ -1222,9 +1237,8 @@ class UnifiedTopHeaderView(context: Context, private val rootView: KeyboardRootV
                         val availableWidth = shortcutsRight - shortcutsLeft
                         val itemWidth = availableWidth / 6f
                         val index = ((x - shortcutsLeft) / itemWidth).toInt()
-                        val ids = listOf("btn_clipboard", "btn_editpad", "btn_emoji", "btn_language", "btn_tpad", "btn_settings")
-                        if (index in ids.indices) {
-                            return ids[index]
+                        if (index in DrawerButton.ALL.indices) {
+                            return DrawerButton.ALL[index].id
                         }
                     }
                 }
@@ -1254,57 +1268,27 @@ class UnifiedTopHeaderView(context: Context, private val rootView: KeyboardRootV
             "hide" -> {
                 rootView.service.requestHideSelf(0)
             }
-            "btn_clipboard" -> {
-                if (rootView.keyboardMode == "CLIPBOARD") {
-                    rootView.service._keyboardMode.value = "QWERTY"
+            in DrawerButton.ALL.map { it.id } -> {
+                val btn = DrawerButton.ALL.first { it.id == id }
+                if (btn == DrawerButton.LANGUAGE) {
+                    rootView.service.switchToNextInputMethod()
                 } else {
-                    rootView.service._keyboardMode.value = "CLIPBOARD"
-                }
-            }
-            "btn_editpad" -> {
-                if (rootView.keyboardMode == "EDIT_PAD") {
-                    rootView.service._keyboardMode.value = "QWERTY"
-                } else {
-                    rootView.service._keyboardMode.value = "EDIT_PAD"
-                }
-            }
-            "btn_emoji" -> {
-                if (rootView.keyboardMode == "EMOJI") {
-                    rootView.service._keyboardMode.value = "QWERTY"
-                } else {
-                    rootView.service._keyboardMode.value = "EMOJI"
-                }
-            }
-            "btn_language" -> {
-                rootView.service.switchToNextInputMethod()
-            }
-            "btn_tpad" -> {
-                if (rootView.keyboardMode == "TPAD") {
-                    rootView.service._keyboardMode.value = "QWERTY"
-                } else {
-                    rootView.service._keyboardMode.value = "TPAD"
-                }
-            }
-            "btn_settings" -> {
-                if (rootView.keyboardMode == "SETTINGS") {
-                    rootView.service._keyboardMode.value = "QWERTY"
-                } else {
-                    rootView.service._keyboardMode.value = "SETTINGS"
+                    rootView.service._keyboardMode.value = DrawerButton.toggleMode(rootView.keyboardMode, btn)
                 }
             }
             else -> {
-                if (id.startsWith("symbol_tab_")) {
-                    val index = id.substringAfter("symbol_tab_").toIntOrNull()
-                    if (index != null) {
-                        rootView.activeSymbolsTab = index
-                        rootView.render()
+                val tabIndex = when {
+                    id.startsWith("symbol_tab_") -> id.substringAfter("symbol_tab_").toIntOrNull()
+                    id.startsWith("emoji_tab_") -> id.substringAfter("emoji_tab_").toIntOrNull()
+                    else -> null
+                }
+                if (tabIndex != null) {
+                    if (id.startsWith("symbol_tab_")) {
+                        rootView.activeSymbolsTab = tabIndex
+                    } else {
+                        rootView.activeEmojiTab = tabIndex
                     }
-                } else if (id.startsWith("emoji_tab_")) {
-                    val index = id.substringAfter("emoji_tab_").toIntOrNull()
-                    if (index != null) {
-                        rootView.activeEmojiTab = index
-                        rootView.render()
-                    }
+                    rootView.render()
                 }
             }
         }

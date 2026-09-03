@@ -15,7 +15,7 @@ data class ClipboardEntity(
 
 @Dao
 interface ClipboardDao {
-    @Query("SELECT * FROM clipboard_items ORDER BY timestamp DESC LIMIT 30")
+    @Query("SELECT * FROM clipboard_items ORDER BY timestamp DESC LIMIT 10")
     fun getAll(): Flow<List<ClipboardEntity>>
 
     @Query("SELECT * FROM clipboard_items ORDER BY timestamp DESC LIMIT 1")
@@ -32,6 +32,9 @@ interface ClipboardDao {
 
     @Query("DELETE FROM clipboard_items WHERE text = :text")
     suspend fun deleteByText(text: String)
+
+    @Query("DELETE FROM clipboard_items WHERE id NOT IN (SELECT id FROM clipboard_items ORDER BY timestamp DESC LIMIT :limit)")
+    suspend fun trimOldItems(limit: Int = 10)
 
     @Query("DELETE FROM clipboard_items")
     suspend fun clearAll()
@@ -62,6 +65,10 @@ abstract class ClipboardDatabase : RoomDatabase() {
 }
 
 class ClipboardRepository(private val clipboardDao: ClipboardDao) {
+    companion object {
+        const val MAX_CLIPBOARD_ITEMS = 10
+    }
+
     private val mutex = Mutex()
 
     val allClipboardItems: Flow<List<ClipboardEntity>> = clipboardDao.getAll()
@@ -79,6 +86,7 @@ class ClipboardRepository(private val clipboardDao: ClipboardDao) {
 
                 clipboardDao.deleteByText(trimmed)
                 clipboardDao.insert(ClipboardEntity(text = trimmed, timestamp = System.currentTimeMillis()))
+                clipboardDao.trimOldItems(MAX_CLIPBOARD_ITEMS)
             }
         }
     }
@@ -107,3 +115,4 @@ class ClipboardRepository(private val clipboardDao: ClipboardDao) {
         }
     }
 }
+

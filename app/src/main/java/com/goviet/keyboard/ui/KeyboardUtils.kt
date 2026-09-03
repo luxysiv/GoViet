@@ -8,6 +8,15 @@ import android.view.inputmethod.EditorInfo
 import android.text.InputType
 
 object KeyboardUtils {
+    private fun isMultiLineOrNoEnterAction(imeOptions: Int, inputType: Int): Boolean {
+        val isMultiLine = (inputType and InputType.TYPE_MASK_CLASS) == InputType.TYPE_CLASS_TEXT &&
+                ((inputType and InputType.TYPE_TEXT_FLAG_MULTI_LINE) != 0 ||
+                 (inputType and InputType.TYPE_TEXT_FLAG_IME_MULTI_LINE) != 0)
+        return isMultiLine || (imeOptions and EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0
+    }
+
+    private fun enterActionCode(imeOptions: Int, inputType: Int): Int =
+        if (isMultiLineOrNoEnterAction(imeOptions, inputType)) -1 else imeOptions and EditorInfo.IME_MASK_ACTION
     // Reusable objects to prevent garbage collection allocations in onDraw
     private val paint = Paint().apply {
         isAntiAlias = true
@@ -45,12 +54,7 @@ object KeyboardUtils {
         nextLabel: String,
         doneLabel: String
     ): String {
-        val isMultiLine = (inputType and InputType.TYPE_MASK_CLASS) == InputType.TYPE_CLASS_TEXT &&
-                ((inputType and InputType.TYPE_TEXT_FLAG_MULTI_LINE) != 0 ||
-                 (inputType and InputType.TYPE_TEXT_FLAG_IME_MULTI_LINE) != 0)
-        val hasNoEnterAction = (imeOptions and EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0
-
-        if (isMultiLine || hasNoEnterAction) {
+        if (isMultiLineOrNoEnterAction(imeOptions, inputType)) {
             return defaultLabel
         }
         val action = imeOptions and EditorInfo.IME_MASK_ACTION
@@ -153,16 +157,7 @@ object KeyboardUtils {
         paint.strokeCap = Paint.Cap.ROUND
         paint.strokeJoin = Paint.Join.ROUND
 
-        val isMultiLine = (inputType and InputType.TYPE_MASK_CLASS) == InputType.TYPE_CLASS_TEXT &&
-                ((inputType and InputType.TYPE_TEXT_FLAG_MULTI_LINE) != 0 ||
-                 (inputType and InputType.TYPE_TEXT_FLAG_IME_MULTI_LINE) != 0)
-        val hasNoEnterAction = (imeOptions and EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0
-
-        val action = if (isMultiLine || hasNoEnterAction) {
-            -1
-        } else {
-            imeOptions and EditorInfo.IME_MASK_ACTION
-        }
+        val action = enterActionCode(imeOptions, inputType)
 
         when (action) {
             EditorInfo.IME_ACTION_SEARCH -> {

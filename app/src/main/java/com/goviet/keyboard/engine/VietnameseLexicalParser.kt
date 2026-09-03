@@ -102,7 +102,7 @@ object VietnameseLexicalParser {
         val canonicalRaw: String,
         val display: String,
         val syllableState: VietnameseComposer.SyllableState,
-        val ownership: CompositionOwnership
+        val ownership: CompositionMode
     )
 
     /**
@@ -120,7 +120,7 @@ object VietnameseLexicalParser {
                 canonicalRaw = "",
                 display = "",
                 syllableState = emptyState,
-                ownership = CompositionOwnership.LIVE_VIETNAMESE
+                ownership = CompositionMode.VIETNAMESE
             )
         }
 
@@ -152,7 +152,7 @@ object VietnameseLexicalParser {
                 canonicalRaw = finalCanonical,
                 display = display,
                 syllableState = syllableState,
-                ownership = CompositionOwnership.ADOPTED_VIETNAMESE
+                ownership = CompositionMode.VIETNAMESE
             )
         } else {
             val literalState = VietnameseComposer.SyllableState(rawSuffix = word)
@@ -163,7 +163,7 @@ object VietnameseLexicalParser {
                 canonicalRaw = word,
                 display = word,
                 syllableState = literalState,
-                ownership = CompositionOwnership.EDITED_LITERAL
+                ownership = CompositionMode.LITERAL
             )
         }
     }
@@ -318,7 +318,7 @@ object VietnameseSnapshotBuilder {
         val composer = threadLocalComposer.get() ?: VietnameseComposer(options)
         composer.options = options
         composer.reset()
-        composer.ownership = CompositionOwnership.ADOPTED_VIETNAMESE
+        composer.isVietnamese = true
 
         val snapshots = ArrayList<VietnameseComposer.ComposerSnapshot>(canonical.length)
         for (i in 0 until canonical.length) {

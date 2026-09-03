@@ -57,7 +57,7 @@ class ImeInputConnectionController(
     val composingRaw = StringBuilder()
     var lastSetComposingText: String? = null
     var activeComposingShiftState = 0 // 0: lowercase, 1: title case, 2: uppercase (caps lock)
-    var compositionOwnership: CompositionOwnership = CompositionOwnership.LIVE_VIETNAMESE
+    var isVietnamese: Boolean = true
     private var lastShiftTime = 0L
     var isSelecting: Boolean = false
     var lastKeyPressTime = 0L
@@ -216,7 +216,7 @@ class ImeInputConnectionController(
     }
 
     fun mapDisplayOffsetToRawCursor(raw: String, display: String, displayOffset: Int): Int {
-        return VietnameseCursorMapper.displayToRaw(raw, display, displayOffset, compositionOwnership, inputEngine.options)
+        return VietnameseCursorMapper.displayToRaw(raw, display, displayOffset, isVietnamese, inputEngine.options)
     }
 
     data class ImeCommitRecord(val word: String, val timestamp: Long)
@@ -225,56 +225,7 @@ class ImeInputConnectionController(
     data class MacroExpansionRecord(val trigger: String, val expandedText: String, val timestamp: Long)
     var lastExpandedMacro: MacroExpansionRecord? = null
 
-    class ImeSnapshot(
-        var composingRaw: String = "",
-        var composingCursorIndex: Int = 0,
-        var displayCursorIndex: Int = 0,
-        var shiftState: Int = 0,
-        val composerSnapshot: VietnameseComposer.ComposerSnapshot = VietnameseComposer.ComposerSnapshot()
-    ) {
-        val displayText: String get() = composerSnapshot.displayText
-        val ownership: CompositionOwnership get() = composerSnapshot.ownership
-
-        fun set(
-            raw: String,
-            cursor: Int,
-            shift: Int,
-            snap: VietnameseComposer.ComposerSnapshot,
-            displayCursor: Int = snap.displayText.length
-        ) {
-            composingRaw = raw
-            composingCursorIndex = cursor
-            displayCursorIndex = displayCursor
-            shiftState = shift
-            composerSnapshot.set(snap.state, snap.displayText, snap.ownership)
-        }
-    }
-
-    private val imeSnapshotPool = Array(32) { ImeSnapshot() }
-    var imeUndoCount = 0
-
-    fun getTopImeSnapshot(): ImeSnapshot? = if (imeUndoCount > 0) imeSnapshotPool[imeUndoCount - 1] else null
-
-    fun popImeSnapshot(): ImeSnapshot? {
-        if (imeUndoCount > 0) {
-            imeUndoCount--
-            return imeSnapshotPool[imeUndoCount]
-        }
-        return null
-    }
-
-    fun pushImeSnapshot(
-        raw: String,
-        cursor: Int,
-        shift: Int,
-        snap: VietnameseComposer.ComposerSnapshot,
-        displayCursor: Int = snap.displayText.length
-    ) {
-        if (imeUndoCount < imeSnapshotPool.size) {
-            imeSnapshotPool[imeUndoCount].set(raw, cursor, shift, snap, displayCursor)
-            imeUndoCount++
-        }
-    }
+    val syncResult = VietnameseComposer.SyncResult()
 
     var lastCommittedChar: Char? = null
     var lastCommittedSeparator: String? = null
@@ -295,14 +246,13 @@ class ImeInputConnectionController(
         composingRaw.clear()
         lastSetComposingText = null
         activeComposingShiftState = 0
-        compositionOwnership = CompositionOwnership.LIVE_VIETNAMESE
+        isVietnamese = true
         lastKeyPressTime = 0L
         composingStartInEditor = -1
         composingCursorIndex = 0
         expectedCursorStart = -1
         expectedCursorEnd = -1
         clearExpectedCursors()
-        imeUndoCount = 0
         lastExpandedMacro = null
         lastCommittedSeparator = null
         inputEngine.reset()
@@ -315,12 +265,6 @@ class ImeInputConnectionController(
         return type == Character.NON_SPACING_MARK.toInt() ||
                 type == Character.COMBINING_SPACING_MARK.toInt() ||
                 type == Character.ENCLOSING_MARK.toInt()
-    }
-
-    fun isPotentialTelexModifier(key: String): Boolean {
-        if (key.length != 1) return false
-        val c = key[0].lowercaseChar()
-        return c in listOf('s', 'f', 'r', 'x', 'j', 'w', 'a', 'e', 'o', 'd')
     }
 
     fun findWordAroundCursor(ic: InputConnection): WordAtCursor? {
@@ -396,25 +340,10 @@ class ImeInputConnectionController(
                 composingRaw.clear()
                 composingRaw.append(canonicalRaw)
                 composingCursorIndex = canonicalRaw.length
-                compositionOwnership = CompositionOwnership.ADOPTED_VIETNAMESE
+                isVietnamese = true
                 lastSetComposingText = wordText
 
-                inputEngine.loadAdoptedSyllable(snaps.last().state, canonicalRaw, snaps)
-                imeUndoCount = 0
-                val runningRaw = StringBuilder()
-                for (snapIdx in snaps.indices) {
-                    val snap = snaps[snapIdx]
-                    if (snapIdx < canonicalRaw.length) {
-                        runningRaw.append(canonicalRaw[snapIdx])
-                    }
-                    pushImeSnapshot(
-                        raw = runningRaw.toString(),
-                        cursor = runningRaw.length,
-                        shift = activeComposingShiftState,
-                        snap = snap,
-                        displayCursor = snap.displayText.length
-                    )
-                }
+                inputEngine.loadSyllable(snaps.last().state, true)
                 ic.setComposingRegion(wordAtCursor.startInEditor, wordAtCursor.endInEditor)
                 userMovedCursor = false
                 return
@@ -427,21 +356,17 @@ class ImeInputConnectionController(
             composingRaw.clear()
             composingRaw.append(wordText)
             composingCursorIndex = wordText.length
-            compositionOwnership = CompositionOwnership.EDITED_LITERAL
+            isVietnamese = false
             lastSetComposingText = wordText
 
             inputEngine.reset()
-            inputEngine.loadLiteral(wordText)
+            inputEngine.loadSyllable(VietnameseComposer.SyllableState(rawSuffix = wordText), false)
             ic.setComposingRegion(wordAtCursor.startInEditor, wordAtCursor.endInEditor)
             userMovedCursor = false
             return
         }
 
-        compositionOwnership = if (wordAtCursor != null && wordCursorOffset > 0 && wordCursorOffset < wordTextLength) {
-            CompositionOwnership.EDITED_LITERAL
-        } else {
-            CompositionOwnership.LIVE_VIETNAMESE
-        }
+        isVietnamese = !(wordAtCursor != null && wordCursorOffset > 0 && wordCursorOffset < wordTextLength)
 
         userMovedCursor = false
     }
@@ -457,21 +382,6 @@ class ImeInputConnectionController(
 
     private fun getCachedCursorPosition(ic: InputConnection): Pair<Int, Int> {
         return Pair(cachedSelStart, cachedSelEnd)
-    }
-
-    fun isComposingStateDesynced(ic: InputConnection): Boolean {
-        if (composingRaw.isEmpty()) return false
-        val start = composingStartInEditor
-        if (start < 0) return true
-        val expectedLen = lastSetComposingText?.length ?: 0
-        val expectedEnd = start + expectedLen
-
-        if (cachedCandidatesStart >= 0) {
-            if (cachedCandidatesStart != start || (cachedCandidatesEnd >= 0 && cachedCandidatesEnd != expectedEnd)) {
-                return true
-            }
-        }
-        return false
     }
 
     private fun isVietnameseComposingKey(key: String): Boolean {
@@ -495,8 +405,7 @@ class ImeInputConnectionController(
             lastSetComposingText = null
             expectedCursorStart = -1
             expectedCursorEnd = -1
-            imeUndoCount = 0
-            inputEngine.reset()
+                inputEngine.reset()
             if (isImmediateCommitMode()) {
                 if (backspaceCountIfImmediate > 0) {
                     backspaceHandler.sendBackspaceEvents(ic, backspaceCountIfImmediate)
@@ -516,7 +425,7 @@ class ImeInputConnectionController(
             val compiledPrefixLen = VietnameseCursorMapper.rawToDisplay(
                 raw = composingRaw.toString(),
                 rawCursor = composingCursorIndex,
-                ownership = compositionOwnership,
+                isVietnamese = isVietnamese,
                 options = inputEngine.options
             )
             if (isImmediateCommitMode()) {
@@ -670,22 +579,15 @@ class ImeInputConnectionController(
                         lastCommittedChar = actualKey.lastOrNull()
                         lastCommittedSeparator = null
 
-                        val (compiledText, snap) = inputEngine.syncStateFromRaw(composingRaw.toString(), compositionOwnership)
+                        val syncResult = this.syncResult
+                        inputEngine.syncStateFromRaw(composingRaw.toString(), isVietnamese, syncResult)
+                        val compiledText = syncResult.displayText
                         val casedDisplay = VietnameseUnicode.applyCasingFromRaw(compiledText, composingRaw.toString())
 
                         updateComposingUI(ic, lastLen, casedDisplay)
 
-                        val currentCompiled = lastSetComposingText ?: casedDisplay
-                        snap.displayText = currentCompiled
-                        pushImeSnapshot(
-                            raw = composingRaw.toString(),
-                            cursor = composingCursorIndex,
-                            shift = activeComposingShiftState,
-                            snap = snap
-                        )
-
                         if (isImmediateCommitMode()) {
-                            recordImeCommit(currentCompiled)
+                            recordImeCommit(casedDisplay)
                         }
                         service.shiftController.consumeSingleShift()
                     }
@@ -750,7 +652,7 @@ class ImeInputConnectionController(
     }
 
     fun compileComposingText(): String {
-        if (compositionOwnership == CompositionOwnership.EDITED_LITERAL) {
+        if (!isVietnamese) {
             return composingRaw.toString()
         }
         return compileText(composingRaw.toString())
@@ -793,7 +695,7 @@ class ImeInputConnectionController(
                     clearExpectedCursors()
                     val raw = composingRaw.toString()
                     val macroExpanded = tryExpandMacro(raw, wordBreak)
-                    val outputText = macroExpanded ?: (if (compositionOwnership == CompositionOwnership.EDITED_LITERAL) raw + wordBreak else compileText(raw) + wordBreak)
+                    val outputText = macroExpanded ?: (if (!isVietnamese) raw + wordBreak else compileText(raw) + wordBreak)
 
                     if (isImmediateCommitMode()) {
                         val lastLen = lastSetComposingText?.length ?: 0

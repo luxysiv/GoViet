@@ -44,14 +44,14 @@ object VietnameseCursorMapper {
     fun buildMapping(
         raw: String,
         display: String = "",
-        ownership: CompositionOwnership = CompositionOwnership.LIVE_VIETNAMESE,
+        isVietnamese: Boolean = true,
         options: EngineOptions = EngineOptions()
     ): CursorMapping {
         if (raw.isEmpty()) {
             return CursorMapping(IntArray(1) { 0 }, IntArray(1) { 0 })
         }
 
-        if (ownership == CompositionOwnership.EDITED_LITERAL) {
+        if (!isVietnamese) {
             val map = IntArray(raw.length + 1) { it }
             return CursorMapping(map, map)
         }
@@ -90,18 +90,18 @@ object VietnameseCursorMapper {
         raw: String,
         display: String,
         displayOffset: Int,
-        ownership: CompositionOwnership = CompositionOwnership.LIVE_VIETNAMESE,
+        isVietnamese: Boolean = true,
         options: EngineOptions = EngineOptions()
     ): Int {
         if (displayOffset <= 0 || raw.isEmpty()) return 0
-        if (ownership == CompositionOwnership.EDITED_LITERAL) {
+        if (!isVietnamese) {
             return displayOffset.coerceIn(0, raw.length)
         }
         if (displayOffset >= display.length) {
             return raw.length
         }
 
-        val mapping = buildMapping(raw, display, ownership, options)
+        val mapping = buildMapping(raw, display, isVietnamese, options)
         return mapping.displayToRaw(displayOffset)
     }
 
@@ -111,11 +111,11 @@ object VietnameseCursorMapper {
     fun rawToDisplay(
         raw: String,
         rawCursor: Int,
-        ownership: CompositionOwnership = CompositionOwnership.LIVE_VIETNAMESE,
+        isVietnamese: Boolean = true,
         options: EngineOptions = EngineOptions()
     ): Int {
         if (rawCursor <= 0 || raw.isEmpty()) return 0
-        if (ownership == CompositionOwnership.EDITED_LITERAL) {
+        if (!isVietnamese) {
             return rawCursor.coerceIn(0, raw.length)
         }
         if (rawCursor >= raw.length) {
@@ -125,7 +125,7 @@ object VietnameseCursorMapper {
             return composer.processString(raw).length
         }
 
-        val mapping = buildMapping(raw, "", ownership, options)
+        val mapping = buildMapping(raw, "", isVietnamese, options)
         return mapping.rawToDisplay(rawCursor)
     }
 }

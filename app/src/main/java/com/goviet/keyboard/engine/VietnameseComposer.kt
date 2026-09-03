@@ -130,256 +130,197 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
             }
             return String(buf, 0, offset)
         }
+
+        /**
+         * Write display text directly to an OwnedBuffer. Zero allocation.
+         * Used in feedChar hot path to avoid String creation.
+         */
+        fun toDisplayBuffer(out: OwnedBuffer, oldTonePlacement: Boolean = false) {
+            out.clear()
+            if (isEmpty()) return
+            val totalLen = onset.length + nucleus.length + coda.length + rawSuffix.length
+            if (totalLen == 0) return
+
+            if (tone == Tone.NONE || nucleus.isEmpty()) {
+                for (i in 0 until onset.length) out.append(onset[i])
+                for (i in 0 until nucleus.length) out.append(nucleus[i])
+                for (i in 0 until coda.length) out.append(coda[i])
+                for (i in 0 until rawSuffix.length) out.append(rawSuffix[i])
+                return
+            }
+
+            val rime = nucleus + coda
+            val placement = if (oldTonePlacement) TonePlacement.LEGACY else TonePlacement.MODERN
+            val toneIdx = VietnameseSpellingGuide.determineTonePosition(rime, onset, placement)
+
+            for (i in 0 until onset.length) out.append(onset[i])
+            for (i in 0 until nucleus.length) {
+                if (i == toneIdx) out.append(VietnameseUnicode.applyTone(nucleus[i], tone))
+                else out.append(nucleus[i])
+            }
+            for (i in 0 until coda.length) out.append(coda[i])
+            for (i in 0 until rawSuffix.length) out.append(rawSuffix[i])
+        }
     }
 
     class ComposerSnapshot(
         val state: SyllableState = SyllableState(),
-        var displayText: String = "",
-        var ownership: CompositionOwnership = CompositionOwnership.LIVE_VIETNAMESE
+        val displayBuffer: OwnedBuffer = OwnedBuffer(),
+        var isVietnamese: Boolean = true
     ) {
-        fun set(s: SyllableState, text: String, own: CompositionOwnership = CompositionOwnership.LIVE_VIETNAMESE) {
+        val displayText: String get() = displayBuffer.toStringVal()
+        val displayLen: Int get() = displayBuffer.len
+
+        fun set(s: SyllableState, buf: OwnedBuffer, len: Int, vietnamese: Boolean = true) {
             state.setFrom(s)
-            displayText = text
-            ownership = own
+            displayBuffer.clear()
+            if (len > 0) displayBuffer.append(buf, 0, len)
+            isVietnamese = vietnamese
         }
 
-        fun copy(): ComposerSnapshot = ComposerSnapshot(
-            state = state.copy(),
-            displayText = displayText,
-            ownership = ownership
-        )
+        fun setFromDisplay(s: SyllableState, text: String, vietnamese: Boolean = true) {
+            state.setFrom(s)
+            displayBuffer.clear()
+            displayBuffer.append(text)
+            isVietnamese = vietnamese
+        }
+
+        fun setFrom(other: ComposerSnapshot) {
+            state.setFrom(other.state)
+            displayBuffer.clear()
+            if (other.displayBuffer.isNotEmpty()) displayBuffer.append(other.displayBuffer)
+            isVietnamese = other.isVietnamese
+        }
+
+        fun copy(): ComposerSnapshot {
+            val snap = ComposerSnapshot()
+            snap.setFrom(this)
+            return snap
+        }
     }
 
     /**
-     * Zero-allocation result container for syncWithRaw.  Reused across keystrokes.
+     * Zero-allocation result container for syncStateFromRaw. Reused across keystrokes.
      */
     class SyncResult {
-        var displayText: String = ""
-        var snapshot: ComposerSnapshot = ComposerSnapshot()
-        fun set(display: String, snap: ComposerSnapshot) { displayText = display; snapshot = snap }
+        val displayBuffer = OwnedBuffer()
+        val snapshot = ComposerSnapshot()
+        val displayText: String get() = displayBuffer.toStringVal()
+        val displayLen: Int get() = displayBuffer.len
+
+        fun setFromResult(buf: OwnedBuffer, len: Int, state: SyllableState, vietnamese: Boolean = true) {
+            displayBuffer.clear()
+            if (len > 0) displayBuffer.append(buf, 0, len)
+            snapshot.set(state, buf, len, vietnamese)
+        }
+
+        fun setFromDisplay(display: String, state: SyllableState, vietnamese: Boolean = true) {
+            displayBuffer.clear()
+            displayBuffer.append(display)
+            snapshot.setFromDisplay(state, display, vietnamese)
+        }
     }
 
-    var ownership: CompositionOwnership = CompositionOwnership.LIVE_VIETNAMESE
+    var isVietnamese: Boolean = true
     private var currentSyllable = SyllableState()
     private val snapshotPool = Array(32) { ComposerSnapshot() }
     private var undoCount = 0
     private val stepOutPool = StepOut()
-
-    // Incremental fast-path cache: when syncStateFromRaw is called with
-    // (lastSyncedRaw + one char) and the new char is a MUTATION, feed just
-    // that char instead of re-processing the whole buffer.
-    private var lastSyncedRaw: String? = null
-    private var lastSyncedOwnership: CompositionOwnership = CompositionOwnership.LIVE_VIETNAMESE
-    private var lastSyncedCommittedLen = 0
+    
+    // Reusable buffers for syncStateFromRaw — eliminates per-keystroke StringBuilder allocation
+    private val committedBuffer = OwnedBuffer()
+    private val resultBuffer = OwnedBuffer()
 
     fun reset() {
         currentSyllable.reset()
         undoCount = 0
-        ownership = CompositionOwnership.LIVE_VIETNAMESE
-        lastSyncedRaw = null
-        lastSyncedCommittedLen = 0
+        isVietnamese = true
     }
 
     fun toDisplayString(): String = currentSyllable.toDisplayString(options.oldTonePlacement)
 
-    fun getCurrentSyllable(): SyllableState = currentSyllable.copy()
-
     fun getTopSnapshot(): ComposerSnapshot? = if (undoCount > 0) snapshotPool[undoCount - 1] else null
 
-    fun restoreSnapshot(snap: ComposerSnapshot) = restoreFromSnapshot(snap)
-
-    fun restoreFromSnapshot(snap: ComposerSnapshot) {
-        lastSyncedRaw = null
-        currentSyllable.setFrom(snap.state)
-        ownership = snap.ownership
-    }
-
-    fun loadAdoptedSyllable(state: SyllableState, canonicalRaw: String, snaps: List<ComposerSnapshot> = emptyList()) {
+    fun loadSyllable(state: SyllableState, vietnamese: Boolean = true) {
         reset()
         currentSyllable.setFrom(state)
-        ownership = CompositionOwnership.ADOPTED_VIETNAMESE
-        undoCount = 0
-        if (snaps.isNotEmpty()) {
-            val limit = minOf(snaps.size, snapshotPool.size)
-            for (i in 0 until limit) {
-                 val s = snaps[i]
-                snapshotPool[i].set(s.state, s.displayText, s.ownership)
-            }
-            undoCount = limit
-        } else {
-            val display = currentSyllable.toDisplayString(options.oldTonePlacement)
-            snapshotPool[0].set(currentSyllable, display, CompositionOwnership.ADOPTED_VIETNAMESE)
-            undoCount = 1
-        }
-    }
-
-    fun loadLiteral(text: String) {
-        reset()
-        currentSyllable.rawSuffix = text
-        ownership = CompositionOwnership.EDITED_LITERAL
-        undoCount = 0
-        if (snapshotPool.isNotEmpty()) {
-            snapshotPool[0].set(currentSyllable, text, CompositionOwnership.EDITED_LITERAL)
-            undoCount = 1
-        }
+        isVietnamese = vietnamese
     }
 
     private enum class CoreStep { BOUNDARY, MUTATION }
 
     private class StepOut {
-        var committedText: String = ""
+        val committedBuffer = OwnedBuffer()
         var separator: Char = ' '
-        var displayText: String = ""
+        val displayBuffer = OwnedBuffer()
     }
 
     private fun feedChar(
         state: SyllableState,
         c: Char,
-        ownership: CompositionOwnership = CompositionOwnership.LIVE_VIETNAMESE,
+        vietnamese: Boolean = true,
         isStaticReDerive: Boolean = false,
         out: StepOut
     ): CoreStep {
         if (BoundaryClassifier.isBoundaryChar(c)) {
-            out.committedText = state.toDisplayString(options.oldTonePlacement)
+            out.committedBuffer.clear()
+            state.toDisplayBuffer(out.committedBuffer, options.oldTonePlacement)
             out.separator = c
             state.reset()
             return CoreStep.BOUNDARY
         }
 
-        if (ownership == CompositionOwnership.EDITED_LITERAL) {
+        if (!vietnamese) {
             state.rawSuffix += c
-            out.displayText = state.toDisplayString(options.oldTonePlacement)
+            out.displayBuffer.clear()
+            state.toDisplayBuffer(out.displayBuffer, options.oldTonePlacement)
             return CoreStep.MUTATION
         }
 
         applyKey(state, c, isStaticReDerive = isStaticReDerive)
-        out.displayText = state.toDisplayString(options.oldTonePlacement)
+        out.displayBuffer.clear()
+        state.toDisplayBuffer(out.displayBuffer, options.oldTonePlacement)
         return CoreStep.MUTATION
     }
 
-    fun syncStateFromRaw(raw: String, own: CompositionOwnership = CompositionOwnership.LIVE_VIETNAMESE): Pair<String, ComposerSnapshot> {
-        if (own == CompositionOwnership.EDITED_LITERAL) {
-            loadLiteral(raw)
-            lastSyncedRaw = raw
-            lastSyncedOwnership = own
-            lastSyncedCommittedLen = 0
-            return Pair(raw, snapshotPool[0].copy())
-        }
 
-        val cached = lastSyncedRaw
-        if (cached != null && own == lastSyncedOwnership &&
-            lastSyncedCommittedLen == 0 &&
-            raw.length == cached.length + 1 &&
-            raw.regionMatches(0, cached, 0, cached.length)
-        ) {
-            ownership = own
-            val stepOut = StepOut()
-            if (feedChar(currentSyllable, raw[cached.length], ownership, isStaticReDerive = false, out = stepOut) == CoreStep.MUTATION) {
-                if (undoCount < snapshotPool.size) {
-                    snapshotPool[undoCount].set(currentSyllable, stepOut.displayText, ownership)
-                    undoCount++
-                }
-                lastSyncedRaw = raw
-                lastSyncedOwnership = own
-                val topSnap = if (undoCount > 0) snapshotPool[undoCount - 1].copy() else ComposerSnapshot(currentSyllable, stepOut.displayText, ownership)
-                return Pair(stepOut.displayText, topSnap)
-            }
-        }
-
-        reset()
-        ownership = own
-        val sb = StringBuilder()
-        val stepOut = stepOutPool
-        for (c in raw) {
-            when (feedChar(currentSyllable, c, ownership, isStaticReDerive = false, out = stepOut)) {
-                CoreStep.BOUNDARY -> {
-                    sb.append(stepOut.committedText).append(stepOut.separator)
-                }
-                CoreStep.MUTATION -> {
-                    if (undoCount < snapshotPool.size) {
-                        snapshotPool[undoCount].set(currentSyllable, stepOut.displayText, ownership)
-                        undoCount++
-                    }
-                }
-            }
-        }
-        val currentDisplay = currentSyllable.toDisplayString(options.oldTonePlacement)
-        val finalDisplay = if (sb.isNotEmpty()) sb.toString() + currentDisplay else currentDisplay
-        val topSnap = if (undoCount > 0) snapshotPool[undoCount - 1].copy() else ComposerSnapshot(currentSyllable, finalDisplay, ownership)
-        lastSyncedRaw = raw
-        lastSyncedOwnership = own
-        lastSyncedCommittedLen = sb.length
-        return Pair(finalDisplay, topSnap)
+    fun syncStateFromRaw(raw: String, vietnamese: Boolean, out: SyncResult): SyncResult {
+        return syncStateFromRaw(raw as CharSequence, vietnamese, out)
     }
 
-    fun syncStateFromRaw(raw: CharSequence, own: CompositionOwnership, out: SyncResult): SyncResult {
+    fun syncStateFromRaw(raw: CharSequence, vietnamese: Boolean, out: SyncResult): SyncResult {
         val rawLen = raw.length
         if (rawLen == 0) {
             reset()
-            out.set("", snapshotPool[0].copy())
+            out.setFromDisplay("", currentSyllable, true)
             return out
         }
 
-        if (own == CompositionOwnership.EDITED_LITERAL) {
+        if (!vietnamese) {
             val rawStr = raw.toString()
-            loadLiteral(rawStr)
-            lastSyncedRaw = rawStr
-            lastSyncedOwnership = own
-            lastSyncedCommittedLen = 0
-            out.set(rawStr, snapshotPool[0].copy())
+            loadSyllable(VietnameseComposer.SyllableState(rawSuffix = rawStr), false)
+            out.setFromDisplay(rawStr, currentSyllable, false)
             return out
-        }
-
-        val cached = lastSyncedRaw
-        if (cached != null && own == lastSyncedOwnership &&
-            lastSyncedCommittedLen == 0 &&
-            rawLen == cached.length + 1
-        ) {
-            var prefixMatches = true
-            for (i in cached.indices) {
-                if (raw[i] != cached[i]) { prefixMatches = false; break }
-            }
-            if (prefixMatches) {
-                ownership = own
-                val stepOut = stepOutPool
-                if (feedChar(currentSyllable, raw[rawLen - 1], ownership, isStaticReDerive = false, out = stepOut) == CoreStep.MUTATION) {
-                    if (undoCount < snapshotPool.size) {
-                        snapshotPool[undoCount].set(currentSyllable, stepOut.displayText, ownership)
-                        undoCount++
-                    }
-                    lastSyncedRaw = raw.toString()
-                    lastSyncedOwnership = own
-                    val topSnap = if (undoCount > 0) snapshotPool[undoCount - 1].copy() else ComposerSnapshot(currentSyllable, stepOut.displayText, ownership)
-                    out.set(stepOut.displayText, topSnap)
-                    return out
-                }
-            }
         }
 
         reset()
-        ownership = own
-        val sb = StringBuilder()
+        isVietnamese = true
+        committedBuffer.clear()
         val stepOut = stepOutPool
         for (i in 0 until rawLen) {
-            when (feedChar(currentSyllable, raw[i], ownership, isStaticReDerive = false, out = stepOut)) {
+            when (feedChar(currentSyllable, raw[i], true, isStaticReDerive = false, out = stepOut)) {
                 CoreStep.BOUNDARY -> {
-                    sb.append(stepOut.committedText).append(stepOut.separator)
+                    committedBuffer.append(stepOut.committedBuffer)
+                    committedBuffer.append(stepOut.separator)
                 }
-                CoreStep.MUTATION -> {
-                    if (undoCount < snapshotPool.size) {
-                        snapshotPool[undoCount].set(currentSyllable, stepOut.displayText, ownership)
-                        undoCount++
-                    }
-                }
+                CoreStep.MUTATION -> { /* display updated via feedChar */ }
             }
         }
         val currentDisplay = currentSyllable.toDisplayString(options.oldTonePlacement)
-        val finalDisplay = if (sb.isNotEmpty()) sb.toString() + currentDisplay else currentDisplay
-        val topSnap = if (undoCount > 0) snapshotPool[undoCount - 1].copy() else ComposerSnapshot(currentSyllable, finalDisplay, ownership)
-        lastSyncedRaw = raw.toString()
-        lastSyncedOwnership = own
-        lastSyncedCommittedLen = sb.length
-        out.set(finalDisplay, topSnap)
+        resultBuffer.clear()
+        if (committedBuffer.isNotEmpty()) resultBuffer.append(committedBuffer)
+        resultBuffer.append(currentDisplay)
+        out.setFromResult(resultBuffer, resultBuffer.len, currentSyllable, isVietnamese)
         return out
     }
 
@@ -401,12 +342,11 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
 
     /** Internal single key processor returning zero-allocation [KeyResult]. */
     fun processKeyInternal(c: Char): KeyResult {
-        lastSyncedRaw = null
         val stepOut = stepOutPool
         val out = keyResult
-        when (feedChar(currentSyllable, c, ownership, isStaticReDerive = false, out = stepOut)) {
+        when (feedChar(currentSyllable, c, isVietnamese, isStaticReDerive = false, out = stepOut)) {
             CoreStep.BOUNDARY -> {
-                val committed = stepOut.committedText
+                val committed = stepOut.committedBuffer.toStringVal()
                 val separator = stepOut.separator
                 reset()
                 if (committed.isNotEmpty()) {
@@ -419,18 +359,17 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
             }
             CoreStep.MUTATION -> {
                 if (undoCount < snapshotPool.size) {
-                    snapshotPool[undoCount].set(currentSyllable, stepOut.displayText, ownership)
+                    snapshotPool[undoCount].set(currentSyllable, stepOut.displayBuffer, stepOut.displayBuffer.len, isVietnamese)
                     undoCount++
                 }
                 out.reset(KeyResult.Kind.UPDATE)
-                out.updateText = stepOut.displayText
+                out.updateText = stepOut.displayBuffer.toStringVal()
             }
         }
         return out
     }
 
     fun backspace(): String {
-        lastSyncedRaw = null
         val currentDisplay = currentSyllable.toDisplayString(options.oldTonePlacement)
         if (currentDisplay.isEmpty()) {
             reset()
@@ -440,7 +379,7 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
         val res = VietnameseEditReducer.reduceBackspace(
             currentDisplay = currentDisplay,
             cursorInDisplay = currentDisplay.length,
-            currentOwnership = ownership,
+            currentOwnership = if (isVietnamese) CompositionMode.VIETNAMESE else CompositionMode.LITERAL,
             options = options
         )
 
@@ -450,19 +389,7 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
         }
 
         currentSyllable.setFrom(res.syllableState)
-        ownership = res.ownership
-        undoCount = 0
-        if (res.snapshots.isNotEmpty()) {
-            val limit = minOf(res.snapshots.size, snapshotPool.size)
-            for (i in 0 until limit) {
-                val s = res.snapshots[i]
-                snapshotPool[i].set(s.state, s.displayText, s.ownership)
-            }
-            undoCount = limit
-        } else {
-            snapshotPool[0].set(currentSyllable, res.display, ownership)
-            undoCount = 1
-        }
+        isVietnamese = (res.ownership == CompositionMode.VIETNAMESE)
         return res.display
     }
 
@@ -485,9 +412,9 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
         val stepOut = StepOut()
 
         for (c in raw) {
-            when (feedChar(tempSyllable, c, CompositionOwnership.LIVE_VIETNAMESE, isStaticReDerive = false, out = stepOut)) {
+            when (feedChar(tempSyllable, c, true, isStaticReDerive = false, out = stepOut)) {
                 CoreStep.BOUNDARY -> {
-                    sb.append(stepOut.committedText).append(stepOut.separator)
+                    sb.append(stepOut.committedBuffer.toStringVal()).append(stepOut.separator)
                 }
                 CoreStep.MUTATION -> {
                     // Stateless mutation - no snapshot overhead needed
@@ -523,7 +450,7 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
         val tempSyllable = SyllableState()
         val stepOut = StepOut()
         for (c in word) {
-            feedChar(tempSyllable, c, CompositionOwnership.LIVE_VIETNAMESE, isStaticReDerive = true, out = stepOut)
+            feedChar(tempSyllable, c, true, isStaticReDerive = true, out = stepOut)
         }
         val result = tempSyllable.toDisplayString(options.oldTonePlacement)
         return VietnameseUnicode.applyCasingFromRaw(result, word)
