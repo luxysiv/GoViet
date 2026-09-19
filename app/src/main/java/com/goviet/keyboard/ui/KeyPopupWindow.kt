@@ -157,6 +157,10 @@ class KeyPopupWindow(private val context: Context) {
      * Maps the finger's window X onto an option index using the popup's real slot
      * width, anchored at the popup center. The highlight therefore tracks the
      * finger 1:1 instead of jumping by a hard-coded pixel step, which feels janky.
+     *
+     * Instead of clamping at the edges, the selection wraps around: keep dragging
+     * past the last option (right) and it cycles back to the first (left), and
+     * vice-versa, so a key with only 2 options never feels "stuck".
      */
     fun hoverIndexForScreenX(screenX: Float, baseIdx: Int): Int {
         if (currentMode != Mode.LONG_PRESS || activeOptions.size <= 1) {
@@ -166,8 +170,9 @@ class KeyPopupWindow(private val context: Context) {
         val slot = popupWidthPx.toFloat() / activeOptions.size
         if (slot <= 0f) return baseIdx.coerceIn(0, activeOptions.size - 1)
         val popupCenterX = popupLeftX + popupWidthPx / 2f
-        return (baseIdx + ((screenX - popupCenterX) / slot).toInt())
-            .coerceIn(0, activeOptions.size - 1)
+        val offset = ((screenX - popupCenterX) / slot).toInt()
+        val size = activeOptions.size
+        return ((baseIdx + offset) % size + size) % size
     }
 
     fun updateHoverIndex(index: Int) {
