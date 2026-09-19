@@ -50,11 +50,12 @@ class TraditionalTpadView @JvmOverloads constructor(
     private val keyPopup = KeyPopupWindow(context)
     private var activePopupOptionIndex = -1
     private var isLongPressed = false
-    private var startX = 0f
-    private var startY = 0f
 
     private val longPressHandler = Handler(Looper.getMainLooper())
     private var activeTouchedKey: Key? = null
+
+    // Reusable buffer for converting view-local coordinates to window coordinates.
+    private val locationBuf = IntArray(2)
 
     // For BACKSPACE repeating and sliding deletion
     private var backspaceSelectCount = 0
@@ -257,9 +258,6 @@ class TraditionalTpadView @JvmOverloads constructor(
                     activeTouchedKey = key
                     key.isPressed = true
                     isLongPressed = false
-                    startX = x
-                    startY = y
-
                     if (key.code == "BACKSPACE") {
                         backspaceSelectCount = 0
                         backspaceStartX = x
@@ -278,10 +276,9 @@ class TraditionalTpadView @JvmOverloads constructor(
                     if (isLongPressed) {
                         val options = trackedKey.longPressOptions
                         if (options != null && options.isNotEmpty()) {
-                            val defaultIdx = trackedKey.longPressDefaultIndex
-                            val step = 32 * density
-                            val dragOffset = x - startX
-                            val hoveredIdx = (defaultIdx + (dragOffset / step).toInt()).coerceIn(0, options.size - 1)
+                            getLocationInWindow(locationBuf)
+                            val screenX = locationBuf[0] + x
+                            val hoveredIdx = keyPopup.hoverIndexForScreenX(screenX, trackedKey.longPressDefaultIndex)
                             if (hoveredIdx != activePopupOptionIndex) {
                                 activePopupOptionIndex = hoveredIdx
                                 keyPopup.updateHoverIndex(hoveredIdx)

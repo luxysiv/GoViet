@@ -38,6 +38,13 @@ class KeyTouchHandler(
     private var startX = 0f
     private var startY = 0f
 
+    // Finger travel (dp) allowed before a slide counts as leaving the key; below
+    // it the long-press timer keeps running, so micro-jitter no longer resets it.
+    private val longPressSlop = 8f * density
+
+    // Reusable buffer for converting view-local coordinates to window coordinates.
+    private val locationBuf = IntArray(2)
+
     // Spacebar cursor swipe
     private var cursorSwipeStartX = 0f
     private var cursorLastTriggerX = 0f
@@ -148,17 +155,17 @@ class KeyTouchHandler(
                             if (isLongPressed) {
                                 val options = trackedKey.longPressOptions
                                 if (options != null && options.isNotEmpty()) {
-                                    val defaultIdx = trackedKey.longPressDefaultIndex
-                                    val step = 32 * density
-                                    val dragOffset = px - startX
-                                    val hoveredIdx = (defaultIdx + (dragOffset / step).toInt()).coerceIn(0, options.size - 1)
+                                    parentView?.getLocationInWindow(locationBuf)
+                                    val screenX = locationBuf[0] + px
+                                    val hoveredIdx = keyPopup.hoverIndexForScreenX(screenX, trackedKey.longPressDefaultIndex)
                                     if (hoveredIdx != activePopupOptionIndex) {
                                         activePopupOptionIndex = hoveredIdx
                                         keyPopup.updateHoverIndex(hoveredIdx)
                                     }
                                 }
                             } else {
-                                val currentHovered = findKeyByCoordinates(px, py)
+                                val movedBeyondSlop = deltaX > longPressSlop || deltaY > longPressSlop
+                                val currentHovered = if (movedBeyondSlop) findKeyByCoordinates(px, py) else trackedKey
                                 if (currentHovered != null && currentHovered != trackedKey && !isCursorSwipeActive && !isBackspaceSwipeActive) {
                                     trackedKey.isPressed = false
                                     currentHovered.isPressed = true
