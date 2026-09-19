@@ -39,6 +39,10 @@ class KeyPopupWindow(private val context: Context) {
     private var popupLeftX = 0
     private var popupWidthPx = 0
 
+    // Last popup on-screen position we requested (PopupWindow has no public x/y getters).
+    private var lastX = Int.MIN_VALUE
+    private var lastY = Int.MIN_VALUE
+
     private data class PopupPosition(val x: Int, val y: Int, val width: Int, val height: Int)
 
     private val locationBuf = IntArray(2)
@@ -87,13 +91,15 @@ class KeyPopupWindow(private val context: Context) {
         val (x, y, width, height) = computePosition(anchorView, keyRect, 66)
 
         val wasShowing = popupWindow.isShowing
-        val oldX = popupWindow.x
-        val oldY = popupWindow.y
+        val oldX = lastX
+        val oldY = lastY
         val oldWidth = popupWindow.width
         val oldHeight = popupWindow.height
 
         popupWindow.width = width
         popupWindow.height = height
+        lastX = x
+        lastY = y
 
         if (wasShowing) {
             // Only pay for the WindowManager.updateViewLayout round-trip (main thread,
@@ -124,13 +130,15 @@ class KeyPopupWindow(private val context: Context) {
         // Capture the current geometry BEFORE assigning, so the unchanged check below
         // reflects the real window state rather than the values we are about to set.
         val wasShowing = popupWindow.isShowing
-        val oldX = popupWindow.x
-        val oldY = popupWindow.y
+        val oldX = lastX
+        val oldY = lastY
         val oldWidth = popupWindow.width
         val oldHeight = popupWindow.height
 
         popupWindow.width = width
         popupWindow.height = height
+        lastX = x
+        lastY = y
         popupLeftX = x
         popupWidthPx = width
 
