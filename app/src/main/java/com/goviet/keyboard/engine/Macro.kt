@@ -78,7 +78,8 @@ class MacroRepository(private val context: Context) {
                 }
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            // Unparsable JSON is treated as "no macros" rather than propagated:
+            // a corrupted expansion list must not take the engine down with it.
         }
         return MacroStore(entries)
     }

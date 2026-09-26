@@ -64,7 +64,6 @@ object AppPreferences {
                     }
                 }
                 editor.apply()
-                println("[AppPreferences] Migrated goviet_legacy_settings to goviet_settings successfully")
             }
             // Save schema version
             globalPrefs.edit().putInt("schema_version", CURRENT_SCHEMA_VERSION).apply()

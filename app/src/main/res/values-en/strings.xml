@@ -108,4 +108,11 @@
     <string name="pref_direct_w_desc">Type \'w\' as \'w\' instead of \'ư\' when standing alone or at start</string>
     <string name="pref_old_tone_title">Traditional tone marks (oà, uý)</string>
     <string name="pref_old_tone_desc">Place tone marks on initial vowels (e.g. hoà, hoè, thuỷ instead of hòa, hòe, thủy)</string>
+    <string name="toast_landscape_split">Split Keyboard</string>
+    <string name="toast_landscape_compact">Side Insets</string>
+    <string name="toast_landscape_full">Full</string>
+
+    <string name="macro_expansion_preview">➔ %1$s</string>
+    <string name="debug_screen_placeholder">Screen: %1$s (Place Holder)</string>
+
 </resources>

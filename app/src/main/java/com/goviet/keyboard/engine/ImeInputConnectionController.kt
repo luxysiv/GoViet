@@ -63,221 +63,120 @@ class ImeInputConnectionController(
     var composingCursorIndex = 0
 
     /**
-     * SelectionGuard — the single owner of "is this onUpdateSelection ours?" bookkeeping.
+     * "Is this onUpdateSelection ours?" is answered by GEOMETRY, not by a ledger of
+     * what we predicted and not by a clock. There is deliberately no TTL, no ring
+     * buffer, no re-announce throttle and no "recent typing" window here — the rule
+     * itself lives in [reconcileSelection], which sees only these fields:
      *
-     * Every place that moves the caret or announces a composing region MUST go through
-     * this guard, so the editor's asynchronous reflection of our own setSelection /
-     * setComposingText / setComposingRegion is always registered as "ours" and never
-     * mistaken for a user cursor move (which would commit/re-adopt the syllable and
-     * flicker the underline).
+     *  - [composingStartInEditor] + [lastSetComposingText] delimit the preedit we
+     *    own, and every write is one replaceText over exactly that range, so the
+     *    bounds are exact without the editor ever reporting a composing region.
      *
-     * Owns:
-     *  - expected cursor ring buffer: positions we set, each stamped with its creation
-     *    time. WebViews can emit stale or duplicated onUpdateSelection callbacks after
-     *    a delay, so a slot is only accepted while still recent (within TTL); several
-     *    moves in quick succession are still acknowledged.
-     *  - composing-region announcement throttle: some editors (WebView/Chrome) persist
-     *    in reporting candidatesStart == -1 on every reflection of our composing span;
-     *    re-asserting unthrottled would loop setComposingRegion -> onUpdateSelection ->
-     *    setComposingRegion and make the underline flicker.
-     *  - recent engine region record: the span WE just wrote, so delete paths can tell
-     *    it apart from a genuine selection a few frames later.
+     * A caret inside that range is either the echo of our own write or the user
+     * tapping inside their own preedit, and both mean the same thing — "keep
+     * composing from here" — so the caret is adopted instead of the buffer being
+     * dropped and rewritten (which is what used to make Zalo flash). A caret
+     * outside it can only be a real editor-side move, and that is detected by
+     * position alone, with no question of how long ago it happened.
+     *
+     * This replaces a predicted-caret ledger ([expectedCaret]) that also recorded
+     * every caret we asked for, in order to absorb the echo of a commit or a
+     * delete. It is gone because each of those values duplicated state we already
+     * had: a post-commit echo lands after a commit that already cleared the range,
+     * and [adoptPrefixAtCaret] declines to re-adopt there anyway (a caret at the
+     * end of a word is not a split point). One fewer thing to be stale in the same
+     * direction as the range it shadowed.
      */
-    private inner class SelectionGuard {
-        private val expectedPositions = IntArray(16) { -1 }
-        private val expectedTimes = LongArray(16) { -1L }
-        private var expectedHead = 0
-        private var lastAnnounceAt = 0L
-        private var recentRegionStart = -1
-        private var recentRegionLen = 0
-        private var recentRegionAt = 0L
 
-        /** Window (ms) during which a self-generated cursor is still considered "ours". */
-        private val expectedCursorTtlMs: Long = 350
-
-        /** Minimum gap between our own setComposingRegion re-announcements. */
-        private val composingReannounceMinGapMs: Long = 500
-
-        /** Remember [cursor] as a position WE moved to / announced. */
-        fun register(cursor: Int) {
-            if (cursor < 0) return
-            expectedPositions[expectedHead] = cursor
-            expectedTimes[expectedHead] = android.os.SystemClock.uptimeMillis()
-            expectedHead = (expectedHead + 1) % expectedPositions.size
-        }
-
-        /** TTL-checks and consumes [cursor] if it was registered by us. */
-        fun isExpected(cursor: Int): Boolean {
-            if (cursor < 0) return false
-            val now = android.os.SystemClock.uptimeMillis()
-            for (i in expectedPositions.indices) {
-                if (expectedPositions[i] == cursor) {
-                    if (now - expectedTimes[i] > expectedCursorTtlMs) {
-                        expectedPositions[i] = -1
-                        return false
-                    }
-                    expectedPositions[i] = -1
-                    expectedTimes[i] = -1L
-                    return true
-                }
-            }
-            return false
-        }
-
-        /** Moves the editor caret to [cursor] and registers it as ours. */
-        fun moveTo(ic: InputConnection, cursor: Int) {
-            if (cursor < 0) return
-            ic.setSelection(cursor, cursor)
-            register(cursor)
-        }
-
-        /**
-         * Records an adopted region and registers its caret as ours in one step.
-         *
-         * Deliberately does NOT call setComposingRegion: the preedit is
-         * committed directly, so no composing span (and no underline) may
-         * exist anywhere — including over freshly adopted words. The caret
-         * is already where it belongs; only the bookkeeping remains.
-         */
-        fun announceRegion(ic: InputConnection, start: Int, end: Int, caret: Int) {
-            if (start < 0 || end <= start) return
-            lastAnnounceAt = System.currentTimeMillis()
-            register(caret)
-        }
-
-        /**
-         * Re-announces [start, end) with caret [caret], but only if the last
-         * announcement was long enough ago — an unthrottled re-assert would loop
-         * setComposingRegion -> onUpdateSelection -> setComposingRegion.
-         */
-        fun maybeReannounce(ic: InputConnection, start: Int, end: Int, caret: Int): Boolean {
-            if (start < 0 || end <= start) return false
-            val now = System.currentTimeMillis()
-            if (now - lastAnnounceAt <= composingReannounceMinGapMs) return false
-            announceRegion(ic, start, end, caret)
-            return true
-        }
-
-        /** Records the span [start, start+len) WE just wrote (composing/committing). */
-        fun markRecentRegion(start: Int, len: Int) {
-            if (start < 0) return
-            recentRegionStart = start
-            recentRegionLen = len
-            recentRegionAt = System.currentTimeMillis()
-        }
-
-        /** True when [start, end) is a span we wrote recently (not a user selection). */
-        fun isRecentRegion(start: Int, end: Int): Boolean {
-            if (recentRegionStart < 0 || end - start != recentRegionLen) return false
-            if (System.currentTimeMillis() - recentRegionAt > 600L) return false
-            return start == recentRegionStart
-        }
-
-        /** Resets all "ours" bookkeeping (ring, throttle, recent region). */
-        fun clear() {
-            for (i in expectedPositions.indices) {
-                expectedPositions[i] = -1
-                expectedTimes[i] = -1L
-            }
-            expectedHead = 0
-            lastAnnounceAt = 0L
-            recentRegionStart = -1
-            recentRegionLen = 0
-            recentRegionAt = 0L
-        }
+    /** Shifts the tracked preedit range after text in front of it was deleted. */
+    fun shiftPreeditStart(delta: Int) {
+        if (delta == 0) return
+        if (composingStartInEditor >= 0) composingStartInEditor += delta
     }
-
-    private val selectionGuard = SelectionGuard()
-
-    /** Public wrapper: move the editor caret and register it as ours. */
-    fun moveCursorTo(ic: InputConnection, cursor: Int) = selectionGuard.moveTo(ic, cursor)
-
-    /** Public wrapper: register a caret we just wrote, without moving the editor caret
-     *  (used by BackspaceHandler when a composing-text rewrite leaves the caret at the
-     *  end of the preedit). Keeps every caret write registered through the guard. */
-    fun registerCaretAsOurs(cursor: Int) = selectionGuard.register(cursor)
-
-    var cachedSelStart: Int = 0
-    var cachedSelEnd: Int = 0
-    var cachedCandidatesStart: Int = -1
-    var cachedCandidatesEnd: Int = -1
 
     var userMovedCursor: Boolean = false
     var userSelectedText: Boolean = false
 
+    /**
+     * Reacts to an editor selection callback. The rule is [reconcileSelection] —
+     * five numbers in, one verdict out — and everything below is the consequence
+     * of that verdict, so "is this callback ours?" is answered in one pure place
+     * and can be tested without an editor.
+     */
     fun onUpdateSelection(
         oldSelStart: Int, oldSelEnd: Int,
         newSelStart: Int, newSelEnd: Int,
         candidatesStart: Int, candidatesEnd: Int
     ) {
-        // Cache only known cursor positions: some editors (e.g. Zalo) report
-        // -1 around focus changes, and caching that would poison every
-        // realSelectionStart fallback (fresh words would lose their preedit
-        // start and fall back to delete+recommit, visibly flashing).
-        // Candidates -1 below stays meaningful (WebView) and is untouched.
-        if (newSelStart >= 0) cachedSelStart = newSelStart
-        if (newSelEnd >= 0) cachedSelEnd = newSelEnd
-        cachedCandidatesStart = candidatesStart
-        cachedCandidatesEnd = candidatesEnd
+        val verdict = reconcileSelection(
+            newSelStart = newSelStart,
+            newSelEnd = newSelEnd,
+            composing = inputEngine.isComposing(),
+            preeditStart = composingStartInEditor,
+            preeditLength = lastSetComposingText?.length ?: 0
+        )
 
-        val lastDisplay = if (!inputEngine.isComposing()) null else (lastSetComposingText ?: compileComposingText())
-        val compStart = if (candidatesStart >= 0) candidatesStart else composingStartInEditor
-        val compEnd = if (compStart >= 0 && lastDisplay != null) compStart + lastDisplay.length else -1
+        when (verdict) {
+            // The editor said nothing, so there is nothing to move.
+            SelectionVerdict.NO_INFO -> return
 
-        val insideComposingRegion = compStart >= 0 && newSelStart >= compStart &&
-                newSelStart <= compEnd && newSelEnd == newSelStart
+            // Echo of our own write, or a tap inside our own preedit: keep the
+            // composition and adopt the caret, instead of dropping the buffer and
+            // rewriting the word from scratch (the old Zalo flicker).
+            SelectionVerdict.KEEP_PREEDIT -> {
+                adoptCaretIntoPreedit(newSelStart)
+                userMovedCursor = false
+                userSelectedText = false
+                return
+            }
 
-        val isRecentTyping = (System.currentTimeMillis() - lastKeyPressTime < 300)
-
-        val isExpected = (insideComposingRegion && selectionGuard.isExpected(newSelStart)) ||
-                (insideComposingRegion && isRecentTyping)
-        if (isExpected) {
-            userMovedCursor = false
-            userSelectedText = false
-            if (candidatesStart == -1 && inputEngine.isComposing() && lastDisplay != null &&
-                composingStartInEditor >= 0
-            ) {
-                val ic = service.currentInputConnection
-                if (ic != null) {
-                    selectionGuard.maybeReannounce(
-                        ic,
-                        composingStartInEditor,
-                        composingStartInEditor + lastDisplay.length,
-                        newSelStart
-                    )
+            SelectionVerdict.USER_MOVE, SelectionVerdict.USER_SELECTION -> {
+                userMovedCursor = true
+                userSelectedText = verdict == SelectionVerdict.USER_SELECTION
+                if (inputEngine.isComposing()) {
+                    // No finishComposingText(): the preedit is written with
+                    // replaceText, which never creates a composing span, so there
+                    // is nothing to finish. The tracked range dies with the buffer.
+                    clearState()
                 }
             }
-            return
         }
 
-        userMovedCursor = true
-        userSelectedText = (newSelStart != newSelEnd)
+        // A tap inside committed text adopts the Vietnamese prefix before the
+        // caret right away. No typing-window gate: a callback that is genuinely
+        // ours never reaches here (the two branches above absorb it), so any
+        // callback arriving here is a real editor-side move and must be acted on
+        // immediately — otherwise the next keystroke would land at the old caret.
+        service.currentInputConnection?.let { adoptPrefixAtCaret(it) }
+    }
 
-        if (candidatesStart >= 0) {
-            composingStartInEditor = candidatesStart
-        }
-
-        if (inputEngine.isComposing()) {
-            // No finishComposingText(): no composing span exists in
-            // direct-commit mode, so there is nothing to finish — just drop
-            // engine state. Calling it would only add a useless IPC plus
-            // another callback round-trip for flicker-prone editors.
-            clearState()
-        }
-
-        val ic = service.currentInputConnection
-        if (ic != null && System.currentTimeMillis() - lastKeyPressTime >= 350L) {
-            adoptPrefixAtCaret(ic)
-        }
+    /**
+     * Maps an editor caret that lands inside our preedit back to the engine's raw
+     * buffer, so the next keystroke is applied where the user is actually typing.
+     */
+    private fun adoptCaretIntoPreedit(editorCaret: Int) {
+        val display = lastSetComposingText ?: return
+        val displayOffset = (editorCaret - composingStartInEditor).coerceIn(0, display.length)
+        composingCursorIndex = rawIndexOfDisplay(
+            inputEngine.composingRaw(), display, displayOffset, inputEngine.composeAsVietnamese
+        )
     }
 
     /**
      * Adopts the Vietnamese prefix before the caret right away when the user taps
-     * into the middle of a word. The composing region then spans only [start, prefix)
-     * — the remainder of the word stays committed outside — so the caret keeps its
+     * into the middle of a word. The preedit then spans only [start, prefix) —
+     * the remainder of the word stays committed outside — so the caret keeps its
      * exact position and every later edit (typing, backspace, delete) happens on
      * the display text through one unified path. Public so backspace can also ask
      * for the adoption when an editor does not report the tap via onUpdateSelection.
+     *
+     * Only a caret strictly INSIDE a word may adopt. A caret sitting at a word end
+     * must not turn that word back into a preedit: right after a separator, a
+     * punctuation commit or a finished preedit, the word in front of the caret is
+     * exactly the one the user just left, and re-adopting it would make the next
+     * keystroke rewrite it. A key typed at a word end adopts through
+     * [resolveCompositionAtCursor] instead, which checks whether the key is a tone
+     * or vowel modifier before taking the word over.
      */
     fun adoptPrefixAtCaret(ic: InputConnection) {
         if (inputEngine.isComposing()) return
@@ -287,7 +186,7 @@ class ImeInputConnectionController(
         val word = findWordAroundCursor(ic) ?: return
         if (word.text.isEmpty()) return
         val offset = word.cursorOffset
-        if (offset <= 0) return
+        if (offset <= 0 || offset >= word.text.length) return
         if (word.startInEditor < 0 || word.endInEditor <= word.startInEditor) return
         if (word.endInEditor - word.startInEditor != word.text.length) return
 
@@ -300,9 +199,10 @@ class ImeInputConnectionController(
         inputEngine.setComposingRaw(canonical)
         composingCursorIndex = canonical.length
         lastSetComposingText = prefix
-        selectionGuard.announceRegion(
-            ic, word.startInEditor, word.startInEditor + prefix.length, word.startInEditor + offset
-        )
+        // The editor caret is already exactly where the preedit ends, and no
+        // composing region is announced (the preedit carries no span, so no
+        // underline can appear over freshly adopted words), so adoption needs
+        // no editor call at all.
         userMovedCursor = false
     }
 
@@ -322,7 +222,6 @@ class ImeInputConnectionController(
         lastKeyPressTime = 0L
         composingStartInEditor = -1
         composingCursorIndex = 0
-        selectionGuard.clear()
         lastExpandedMacro = null
     }
 
@@ -336,24 +235,18 @@ class ImeInputConnectionController(
     }
 
     /**
-     * Queries the TRUE caret position from the InputConnection instead of relying on
-     * the cached onUpdateSelection values. Our own edits can leave the cached cursor
-     * stale for a few frames (e.g. space commit followed immediately by backspace),
-     * and a stale offset makes the composing region drift — the composed vowel (from
-     * "oo") ends up stranded behind the newly composed text. ExtractedText is the
-     * only synchronous, race-free source of the caret position.
+     * The TRUE caret position, as the editor reports it right now.
+     *
+     * Our own edits move the caret, and onUpdateSelection echoes of them can be
+     * delayed by a frame (a space commit followed immediately by a backspace is
+     * the classic case). A remembered caret from such an echo is a guess; the
+     * editor's own answer is not, so a guess is never used as a substitute:
+     * when the editor does not answer, this returns -1 and every caller treats
+     * that as "no information" and declines to act, instead of writing a preedit
+     * at a position nobody verified.
      */
-    private fun realSelectionStart(ic: InputConnection): Int {
-        val extracted = queryExtractedText(ic)
-        val sel = extracted?.selectionStart ?: -1
-        return if (sel < 0) cachedSelStart else sel
-    }
-
-    private fun realSelectionEnd(ic: InputConnection): Int {
-        val extracted = queryExtractedText(ic)
-        val sel = extracted?.selectionEnd ?: -1
-        return if (sel < 0) cachedSelEnd else sel
-    }
+    private fun realSelectionStart(ic: InputConnection): Int =
+        queryExtractedText(ic)?.selectionStart ?: -1
 
     private fun queryExtractedText(ic: InputConnection): android.view.inputmethod.ExtractedText? {
         val request = android.view.inputmethod.ExtractedTextRequest()
@@ -361,16 +254,17 @@ class ImeInputConnectionController(
         return ic.getExtractedText(request, 0)
     }
 
-    /** True caret selection, race-free — used by the delete paths. */
+    /**
+     * True when the editor has a real selection right now — used by the delete
+     * paths, where answering "no" wrongly would delete one grapheme INSIDE a
+     * selection the user made. getSelectedText is the API for exactly that
+     * question (null for a collapsed caret), so no remembered selection offset
+     * is involved.
+     */
     fun hasRealSelection(ic: InputConnection): Boolean {
         if (isSelecting) return true
         if (userSelectedText) return true
-        val extracted = queryExtractedText(ic)
-        val selStart = extracted?.selectionStart ?: cachedSelStart
-        val selEnd = extracted?.selectionEnd ?: cachedSelEnd
-        if (selStart < 0 || selEnd < 0 || selStart == selEnd) return false
-        if (selectionGuard.isRecentRegion(selStart, selEnd)) return false
-        return true
+        return !ic.getSelectedText(0).isNullOrEmpty()
     }
 
     fun findWordAroundCursor(ic: InputConnection): WordAtCursor? {
@@ -392,15 +286,55 @@ class ImeInputConnectionController(
         val fullWord = wordBefore + wordAfter
         if (fullWord.isEmpty()) return null
 
+        // Absolute offsets are only meaningful relative to the caret, and the
+        // caret is the editor's to tell us: without it there is no word to
+        // describe, and guessing position 0 would hand back a range pointing at
+        // the start of the document.
         val curSelStart = realSelectionStart(ic)
-        val base = if (curSelStart >= 0) curSelStart else 0
+        if (curSelStart < 0) return null
 
         return WordAtCursor(
             text = fullWord,
-            startInEditor = (base - wordBefore.length).coerceAtLeast(0),
-            endInEditor = base + wordAfter.length,
+            startInEditor = (curSelStart - wordBefore.length).coerceAtLeast(0),
+            endInEditor = curSelStart + wordAfter.length,
             cursorOffset = wordBefore.length
         )
+    }
+
+    /**
+     * Applies one Telex key to the live composition buffer at the tracked caret.
+     *
+     * Returns true when the key had to START A NEW SYLLABLE in front of the
+     * running preedit, i.e. the caret sits before the preedit's onset
+     * ([composingCursorIndex] == 0 while the buffer is not empty).
+     *
+     * This split is mandatory, not an optimisation. The kernel models exactly
+     * ONE syllable per buffer ([VietnameseComposer.SyllableState] holds a single
+     * onset/nucleus/coda), so gluing a new key onto raw index 0 would append a
+     * second syllable to that buffer: every letter behind the caret then falls
+     * out of the nucleus into the raw suffix, the tone mark is dropped and the
+     * trailing tone key leaks out as a literal character. Typing "as" before the
+     * "t" of the preedit "thấy" would render "áthaays" instead of "áthấy".
+     *
+     * Instead the running preedit is dropped from the BUFFER only — the editor
+     * text is left exactly as it is, character for character — and the new
+     * syllable is written as a pure insertion at the caret (see [writePreedit],
+     * whose range is empty here). Every keystroke therefore transforms only the
+     * syllable under the caret and never its neighbours.
+     */
+    internal fun applyKeyToComposingBuffer(key: Char): Boolean {
+        if (inputEngine.isComposing() && composingCursorIndex <= 0 && inputEngine.composingRawLength() > 0) {
+            inputEngine.reset()
+            inputEngine.composeAsVietnamese = true
+            composingCursorIndex = 0
+            lastSetComposingText = null
+            inputEngine.insertComposingKey(0, key)
+            composingCursorIndex = 1
+            return true
+        }
+        inputEngine.insertComposingKey(composingCursorIndex, key)
+        composingCursorIndex += 1
+        return false
     }
 
     /**
@@ -412,8 +346,9 @@ class ImeInputConnectionController(
         key: String,
         wordAtCursor: WordAtCursor?
     ) {
-        val currentSel = realSelectionStart(ic)
-        composingStartInEditor = if (currentSel >= 0) currentSel else -1
+        // -1 when the editor will not say: no managed range is claimed, so the
+        // preedit is written as a plain insertion at the editor's own caret.
+        composingStartInEditor = realSelectionStart(ic)
         composingCursorIndex = 0
 
         val wordCursorOffset = wordAtCursor?.cursorOffset ?: 0
@@ -456,12 +391,6 @@ class ImeInputConnectionController(
             inputEngine.setComposingRaw(canonicalRaw)
             composingCursorIndex = canonicalRaw.length
             lastSetComposingText = adoptTarget
-            selectionGuard.announceRegion(
-                ic,
-                wordAtCursor.startInEditor,
-                wordAtCursor.startInEditor + adoptTarget.length,
-                wordAtCursor.startInEditor + adoptTarget.length
-            )
             userMovedCursor = false
             return
         }
@@ -473,9 +402,6 @@ class ImeInputConnectionController(
             inputEngine.setComposingRaw(wordText)
             composingCursorIndex = wordText.length
             lastSetComposingText = wordText
-            selectionGuard.announceRegion(
-                ic, wordAtCursor.startInEditor, wordAtCursor.endInEditor, wordAtCursor.endInEditor
-            )
             userMovedCursor = false
             return
         }
@@ -485,9 +411,6 @@ class ImeInputConnectionController(
             inputEngine.setComposingRaw(wordText)
             composingCursorIndex = wordText.length
             lastSetComposingText = wordText
-            selectionGuard.announceRegion(
-                ic, wordAtCursor.startInEditor, wordAtCursor.endInEditor, wordAtCursor.endInEditor
-            )
             userMovedCursor = false
             return
         }
@@ -497,6 +420,13 @@ class ImeInputConnectionController(
         userMovedCursor = false
     }
 
+    /**
+     * The one deliberate exception to "every edit is a replaceText": TYPE_NULL
+     * fields (terminal-style / hardware-key inputs) have no text of their own to
+     * preedit, so they get committed key by key with backspace key events instead
+     * of a managed range. It is a field-type decision, not a legacy-Android
+     * fallback, and it never runs for normal text fields.
+     */
     fun isImmediateCommitMode(): Boolean {
         val editorInfo = service.currentInputEditorInfo ?: return false
         return editorInfo.inputType == android.text.InputType.TYPE_NULL
@@ -519,116 +449,110 @@ class ImeInputConnectionController(
      * ========================================================================= */
 
     fun resetComposingUI(ic: InputConnection, backspaceCountIfImmediate: Int = 0) {
-        selectionGuard.clear()
         val lastStr = lastSetComposingText ?: ""
+        val start = composingStartInEditor
         lastSetComposingText = null
         inputEngine.reset()
+        composingStartInEditor = -1
         if (isImmediateCommitMode()) {
             if (backspaceCountIfImmediate > 0) {
                 backspaceHandler.sendBackspaceEvents(ic, backspaceCountIfImmediate)
             }
         } else if (lastStr.isNotEmpty()) {
-            // Direct-commit mode: the preedit text is already committed, so
-            // clearing it means deleting it (both callers — delete-word and
-            // backspace-to-empty — pass the length with exactly this intent).
-            // A mid-preedit caret is parked at the end first (registered as
-            // ours) so the delete removes the whole word, not just its head.
-            if (composingStartInEditor >= 0 &&
-                composingCursorIndex != inputEngine.composingRawLength()
-            ) {
-                selectionGuard.moveTo(ic, composingStartInEditor + lastStr.length)
+            // Both callers — delete-word and backspace-to-empty — mean "drop the
+            // whole preedit". The range is known exactly, so the preedit leaves
+            // in ONE atomic op: no caret parking, no delete-at-caret guesswork.
+            if (start < 0 || !ic.replaceText(start, start + lastStr.length, "", 1, null)) {
+                if (start >= 0) ic.setSelection(start + lastStr.length, start + lastStr.length)
+                ic.deleteSurroundingText(lastStr.length, 0)
             }
-            ic.deleteSurroundingText(lastStr.length, 0)
         }
     }
 
     /**
-     * Direct-commit preedit sync — the single replacement for every
-     * setComposingText call. The editor never holds a composing span, so no
-     * underline is ever drawn, while the engine buffer keeps full Telex
-     * behavior (transforms on next key, adoption, grapheme backspace).
+     * Writes the whole preedit in ONE editor operation.
      *
-     * Fewest editor ops first: pure append commits the new tail, pure
-     * truncation deletes the tail (both single atomic ops). True rewrites
-     * go through middle-diff (common prefix+suffix trim, never selecting),
-     * so no selection highlight and no empty transient can ever draw.
-     * Editor-state only: callers own lastSetComposingText bookkeeping.
+     * InputConnection.replaceText (API 25) replaces an explicit range atomically,
+     * so the editor observes a single text change: there is no delete+insert pair
+     * and no frame in which the preedit is missing — that pair is exactly what made
+     * Zalo/Telegram flash on every diacritic ("a" -> "á" used to be two commands).
+     *
+     * It is also the API that can never draw a composing underline: AOSP
+     * BaseInputConnection.replaceText() calls removeComposingSpans() and then
+     * replaceTextInternal(..., composing = false), which by construction skips the
+     * candidatesTextStyleSpans (UnderlineSpan) that setComposingText would apply.
+     * (setComposingText would only stay underline-free if the IME pre-wraps the
+     * text in a Spannable — and setComposingRegion has no such escape hatch at
+     * all, so adopting an existing word as a composing region would underline it.)
+     *
+     * The range is ours by construction, so the preedit bounds are exact without
+     * the editor ever reporting a composing region.
+     *
+     * This is also the single owner of the preedit bookkeeping: [lastSetComposingText]
+     * is set here, BEFORE the editor is touched, so at every point of the call the
+     * local state describes the editor as it WILL be — the invariant that makes the
+     * echo reconciliation in [onUpdateSelection] provable instead of assumed.
      */
-    fun syncPreeditDirect(ic: InputConnection, display: String) {
-        val lastStr = lastSetComposingText ?: ""
-        if (display == lastStr) return
-        if (lastStr.isEmpty()) {
-            if (display.isNotEmpty()) {
-                ic.commitText(display, 1)
+    fun writePreedit(ic: InputConnection, display: String, oldLen: Int = lastSetComposingText?.length ?: 0) {
+        val start = composingStartInEditor
+        val caretInDisplay = displayCursorIndex()
+        val caret = if (start >= 0) start + caretInDisplay else -1
+        lastSetComposingText = display
+        if (start >= 0 && ic.replaceText(start, start + oldLen, display, 1, null)) {
+            // newCursorPosition = 1 always lands the caret after the whole new
+            // text, so a preedit caret in the middle needs one extra
+            // selection-only call: it changes no text, hence cannot make the
+            // editor redraw the word.
+            if (caretInDisplay != display.length) {
+                ic.setSelection(caret, caret)
             }
             return
         }
-        if (display.startsWith(lastStr)) {
-            ic.commitText(display.substring(lastStr.length), 1)
-            return
-        }
-        if (lastStr.startsWith(display)) {
-            ic.deleteSurroundingText(lastStr.length - display.length, 0)
-            return
-        }
-        if (composingStartInEditor >= 0) {
-            // Middle-diff rewrite (common prefix+suffix trim, never
-            // selecting): exact for end caret, parked-then-exact for mid
-            // caret. No selection highlight and no empty transient ever.
-            return syncMiddleDiff(ic, lastStr, display)
-        }
-        return syncMinimalDiff(ic, lastStr, display)
+        legacyRewrite(ic, oldLen, display, caretInDisplay)
     }
 
     /**
-     * Middle-diff rewrite: common prefix AND suffix trim, never selecting.
-     * End caret behaves like minimal-diff (caret lands at the end); mid
-     * caret parks first and the caller restores it afterwards via the usual
-     * moveCursorTo/register path.
+     * Fallback for editors whose InputConnection does not implement replaceText
+     * (Flutter's TextInputConnection and other hand-rolled connections): one
+     * delete of the old preedit plus one commit of the new one, in that order,
+     * inside the caller's single batch edit. This guards the EDITOR, not the
+     * platform version, and stays as long as such editors exist.
      */
-    private fun syncMiddleDiff(ic: InputConnection, lastStr: String, display: String) {
-        val midRaw = composingCursorIndex != inputEngine.composingRawLength()
-        if (!midRaw) {
-            return syncMinimalDiff(ic, lastStr, display)
+    private fun legacyRewrite(ic: InputConnection, oldLen: Int, display: String, caretInDisplay: Int) {
+        val start = composingStartInEditor
+        val caret = if (start >= 0) start + caretInDisplay else -1
+        if (oldLen > 0) {
+            if (start >= 0 && caretInDisplay != oldLen) {
+                ic.setSelection(start + oldLen, start + oldLen)
+            }
+            ic.deleteSurroundingText(oldLen, 0)
         }
-        val totalOld = lastStr.length
-        val totalNew = display.length
-        var p = 0
-        while (p < minOf(totalOld, totalNew) && lastStr[p] == display[p]) p++
-        var s = 0
-        while (s < minOf(totalOld, totalNew) - p &&
-            lastStr[totalOld - 1 - s] == display[totalNew - 1 - s]) s++
-        selectionGuard.moveTo(ic, composingStartInEditor + totalOld - s)
-        val del = totalOld - s - p
-        if (del > 0) {
-            ic.deleteSurroundingText(del, 0)
+        if (display.isNotEmpty()) {
+            ic.commitText(display, 1)
         }
-        val newMid = display.substring(p, totalNew - s)
-        if (newMid.isNotEmpty()) {
-            ic.commitText(newMid, 1)
+        if (start >= 0 && caretInDisplay != display.length) {
+            ic.setSelection(caret, caret)
         }
     }
 
     /**
-     * Legacy minimal-diff rewrite (delete differing tail + commit new tail).
-     * Best effort when the preedit bounds cannot be proven; correct whenever
-     * the caret is at the preedit end (the common case).
+     * Claims a managed range for a preedit that was written as a plain insertion
+     * at the editor's caret, so the write that produced it is recognised as ours
+     * by [reconcileSelection] instead of looking like a user move.
+     *
+     * Only for the paths that cannot know the position beforehand: a preedit
+     * written where the editor's caret already was (the macro rollback) leaves
+     * the range unclaimed, and its own echo would then arrive as a real move and
+     * drop the buffer the call was asked to restore. The position is read from
+     * the editor rather than predicted, and only on this rare path — inside the
+     * caller's batch edit, so it costs no extra round-trip. If the editor does
+     * not answer, no range is claimed and the next keystroke writes the preedit
+     * as an insertion again.
      */
-    private fun syncMinimalDiff(ic: InputConnection, lastStr: String, display: String) {
-        // Longest common prefix (UTF-16 units; both sides are our own
-        // strings, so a split surrogate pair recombines correctly).
-        var common = 0
-        val maxCommon = minOf(lastStr.length, display.length)
-        while (common < maxCommon && lastStr[common] == display[common]) {
-            common++
-        }
-        if (common < lastStr.length) {
-            ic.deleteSurroundingText(lastStr.length - common, 0)
-        }
-        if (common < display.length) {
-            // Caret sits at the end of the kept prefix (the delete left it
-            // there; a fresh preedit starts at the caret) — commit the tail.
-            ic.commitText(display.substring(common), 1)
+    fun claimPreeditRangeAtCaret(ic: InputConnection, displayLength: Int) {
+        val caret = realSelectionStart(ic)
+        if (caret >= 0) {
+            composingStartInEditor = caret - displayLength
         }
     }
 
@@ -640,28 +564,19 @@ class ImeInputConnectionController(
      */
     fun updateComposingUI(ic: InputConnection, lastLenIfImmediate: Int = 0, explicitCompiled: String? = null) {
         val compiled = explicitCompiled ?: compileComposingText()
+        val oldStr = lastSetComposingText ?: ""
+        val oldLen = oldStr.length
         if (isImmediateCommitMode()) {
-            val lastStr = lastSetComposingText ?: ""
-            if (lastStr.isNotEmpty() && compiled.length == lastStr.length - 1 && lastStr.startsWith(compiled)) {
+            lastSetComposingText = compiled
+            if (oldStr.isNotEmpty() && compiled.length == oldLen - 1 && oldStr.startsWith(compiled)) {
                 backspaceHandler.sendBackspaceEvents(ic, 1)
             } else if (lastLenIfImmediate > 0) {
                 backspaceHandler.sendBackspaceEvents(ic, lastLenIfImmediate)
             }
             ic.commitText(compiled, 1)
         } else {
-            syncPreeditDirect(ic, compiled)
+            writePreedit(ic, compiled, oldLen)
         }
-        if (composingStartInEditor >= 0) {
-            if (composingCursorIndex != inputEngine.composingRawLength()) {
-                moveCursorTo(ic, composingStartInEditor + displayCursorIndex())
-            } else {
-                selectionGuard.register(composingStartInEditor + compiled.length)
-            }
-        }
-        if (!isImmediateCommitMode()) {
-            selectionGuard.markRecentRegion(composingStartInEditor, compiled.length)
-        }
-        lastSetComposingText = compiled
     }
 
     private fun handleBackspace(ic: InputConnection) {
@@ -677,10 +592,12 @@ class ImeInputConnectionController(
     }
 
     private fun handleSeparator(ic: InputConnection, separator: String) {
+        // Runs inside handleKeyPress's batch, so the commit and the separator are
+        // one editor transaction: no frame in which the word and its space are
+        // written apart.
         if (inputEngine.isComposing()) {
-            commitAndReset(wordBreak = separator)
+            commitAndReset(wordBreak = separator, alreadyBatched = true)
         } else {
-            commitAndReset()
             ic.commitText(separator, 1)
         }
         if (separator != " ") {
@@ -709,7 +626,7 @@ class ImeInputConnectionController(
                 handleSeparator(ic, " ")
                 return
             } else if (key == "ENTER") {
-                commitAndReset()
+                commitAndReset(alreadyBatched = true)
                 val editorInfo = service.currentInputEditorInfo
                 val inputType = editorInfo?.inputType ?: 0
                 val isMultiLine = (inputType and android.text.InputType.TYPE_MASK_CLASS) == android.text.InputType.TYPE_CLASS_TEXT &&
@@ -766,7 +683,7 @@ class ImeInputConnectionController(
                     }
                     service.notifySentenceStateAfterKey(actualKey)
                     if (!composeAsVietnameseComposingKey(key)) {
-                        commitAndReset()
+                        commitAndReset(alreadyBatched = true)
                         ic.commitText(actualKey, 1)
                         service.lastCommittedWord = actualKey
                         service.shiftController.consumeSingleShift()
@@ -784,8 +701,7 @@ class ImeInputConnectionController(
                             resolveCompositionAtCursor(ic, actualKey, wordAtCursor)
                         }
                         val lastLen = lastSetComposingText?.length ?: 0
-                        inputEngine.insertComposingKey(composingCursorIndex, actualKey[0])
-                        composingCursorIndex += actualKey.length
+                        applyKeyToComposingBuffer(actualKey[0])
 
                         val casedDisplay = if (inputEngine.composeAsVietnamese) {
                             inputEngine.toDisplayString()
@@ -845,16 +761,25 @@ class ImeInputConnectionController(
                 isSelecting = false
             }
             "DELETE" -> {
-                val selected = ic.getSelectedText(0)
-                if (selected != null && selected.isNotEmpty()) {
-                    ic.commitText("", 1)
-                } else {
-                    if (isImmediateCommitMode()) {
-                        ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_FORWARD_DEL))
-                        ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_FORWARD_DEL))
+                // Batched like BackspaceHandler's paths: the selection delete and
+                // the forward delete are one editor transaction, and a DELETE key
+                // must cost the same single round-trip as BACKSPACE.
+                ic.beginBatchEdit()
+                try {
+                    val selected = ic.getSelectedText(0)
+                    if (selected != null && selected.isNotEmpty()) {
+                        clearState()
+                        ic.commitText("", 1)
                     } else {
-                        backspaceHandler.deleteNextGraphemeOrChar(ic)
+                        if (isImmediateCommitMode()) {
+                            ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_FORWARD_DEL))
+                            ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_FORWARD_DEL))
+                        } else {
+                            backspaceHandler.deleteNextGraphemeOrChar(ic)
+                        }
                     }
+                } finally {
+                    ic.endBatchEdit()
                 }
             }
         }
@@ -937,46 +862,60 @@ class ImeInputConnectionController(
     private fun applyMacroCase(expansion: String, typed: String): String =
         if (typed.isNotEmpty() && typed.all { it.isUpperCase() }) expansion.uppercase() else expansion
 
-    fun commitAndReset(wordBreak: String = "") {
+    /**
+     * Commits the running preedit and drops it.
+     *
+     * [alreadyBatched] must be true when the caller already opened a batch edit
+     * ([handleKeyPress] does): a nested beginBatchEdit/endBatchEdit pair costs two
+     * extra binder round-trips to the editor and buys no extra atomicity.
+     */
+    fun commitAndReset(wordBreak: String = "", alreadyBatched: Boolean = false) {
         if (inputEngine.isComposing()) {
             val ic = service.currentInputConnection
             if (ic != null) {
-                ic.beginBatchEdit()
+                if (!alreadyBatched) ic.beginBatchEdit()
                 try {
-                    selectionGuard.clear()
                     val raw = inputEngine.composingRaw().toString()
                     val macroExpanded = tryExpandMacro(raw, wordBreak)
                     val outputText = macroExpanded ?: (if (!inputEngine.composeAsVietnamese) raw + wordBreak else compileRawDisplay() + wordBreak)
+                    val start = composingStartInEditor
+                    val preeditLen = lastSetComposingText?.length ?: 0
+                    val immediate = isImmediateCommitMode()
+                    // Local state first: the engine and the tracked range describe
+                    // exactly what the editor is about to be given before a single
+                    // editor call is made.
+                    recordImeCommit(outputText.trim())
+                    val expanded = macroExpanded
+                    clearState()
 
-                    if (isImmediateCommitMode()) {
-                        val lastLen = lastSetComposingText?.length ?: 0
-                        if (lastLen > 0) {
-                            backspaceHandler.sendBackspaceEvents(ic, lastLen)
+                    if (immediate) {
+                        if (preeditLen > 0) {
+                            backspaceHandler.sendBackspaceEvents(ic, preeditLen)
                         }
                         ic.commitText(outputText, 1)
                     } else if (macroExpanded != null) {
-                        // Macro expansion replaces the committed raw word.
-                        val lastStr = lastSetComposingText ?: ""
-                        if (lastStr.isNotEmpty()) {
-                            ic.deleteSurroundingText(lastStr.length, 0)
+                        // Macro expansion replaces the whole preedit range in one
+                        // atomic op, so the word never blinks between the old and
+                        // the expanded text.
+                        if (start < 0 || !ic.replaceText(start, start + preeditLen, outputText, 1, null)) {
+                            if (preeditLen > 0) {
+                                ic.deleteSurroundingText(preeditLen, 0)
+                            }
+                            ic.commitText(outputText, 1)
                         }
-                        ic.commitText(outputText, 1)
                     } else if (wordBreak.isNotEmpty()) {
-                        // The display itself is already committed; only the
-                        // separator is new. No finishComposingText: no
-                        // composing span exists in direct-commit mode.
+                        // The preedit text is already committed; only the separator
+                        // is new. No finishComposingText: the preedit carries no
+                        // composing span, so there is nothing to finish.
                         ic.commitText(wordBreak, 1)
                     }
-                    if (!isImmediateCommitMode()) {
-                        selectionGuard.markRecentRegion(composingStartInEditor, lastSetComposingText?.length ?: 0)
-                    }
-                    recordImeCommit(outputText.trim())
-                    clearState()
-                    if (macroExpanded != null) {
+                    // Pure commit: the text stays exactly as it is, so there is
+                    // nothing left to send to the editor.
+                    if (expanded != null) {
                         lastExpandedMacro = MacroExpansionRecord(raw, outputText, System.currentTimeMillis())
                     }
                 } finally {
-                    ic.endBatchEdit()
+                    if (!alreadyBatched) ic.endBatchEdit()
                 }
             } else {
                 clearState()

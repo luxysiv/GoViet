@@ -48,8 +48,7 @@ class BugReproductionTest {
         adoptBack("luan")
         engine.processKey('a')
         val display = engine.toDisplayString()
-        println("Bug1: raw='${engine.composingRaw()}' display='$display'")
-        assertEquals("luân", display)
+        assertEquals("folding ua→uâ must render 'luân' (raw=${engine.composingRaw()})", "luân", display)
         assertEquals("luana", engine.composingRaw().toString())
     }
 
@@ -71,12 +70,10 @@ class BugReproductionTest {
         adoptBack("xuat")
         engine.processKey('a')
         val afterA = engine.toDisplayString()
-        println("Bug3 after 'a': raw='${engine.composingRaw()}' display='$afterA'")
-        assertEquals("xuât", afterA)
+        assertEquals("'a' after 'xuat' must fold ua→uâ (raw=${engine.composingRaw()})", "xuât", afterA)
         engine.processKey('s')
         val display = engine.toDisplayString()
-        println("Bug3 after 's': raw='${engine.composingRaw()}' display='$display'")
-        assertEquals("xuất", display)
+        assertEquals("'s' must add the tone without touching the coda (raw=${engine.composingRaw()})", "xuất", display)
         assertEquals("xuatas", engine.composingRaw().toString())
     }
 
@@ -102,8 +99,7 @@ class BugReproductionTest {
         engine.setComposingRaw(canonical!!)
         engine.processKey('e')
         val display = engine.toDisplayString()
-        println("Bug4 retype: raw='${engine.composingRaw()}' display='$display'")
-        assertEquals("luyene", display)
+        assertEquals("fold-last retype must untoggle instead of re-folding (raw=${engine.composingRaw()})", "luyene", display)
     }
 
     // Same retype contract for uâ: commit "luân" + 'a' → "luana".

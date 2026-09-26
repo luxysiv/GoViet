@@ -672,10 +672,11 @@ class KeyboardRootView @JvmOverloads constructor(
         val paddingDp = if (isGestureMode) {
             20f + extraPadding
         } else {
-            val insetDp = navigationBarHeightRawDp
-            val systemNavBarHeightDp = service.getNavigationBarHeight() / densityValue
-            val rawPadding = if (insetDp > 0f) insetDp else systemNavBarHeightDp
-            (rawPadding - 4f).coerceIn(24f, 48f) + extraPadding
+            // Một số đo duy nhất: inset mà cửa sổ thực sự nhận được. Trước đây
+            // khi inset = 0 còn đoán lại bằng system dim, tức là lấy chiều cao
+            // của một thanh khác với thanh đang hiện — nên nhánh fallback đã bị
+            // gỡ cùng nguồn số liệu cũ.
+            (navigationBarHeightRawDp - 4f).coerceIn(24f, 48f) + extraPadding
         }
         return paddingDp.dpPx(context)
     }
@@ -696,13 +697,10 @@ class KeyboardRootView @JvmOverloads constructor(
             if (vivoMode != 0) return true
         } catch (e: Exception) {}
 
-        try {
-            val resourceId = context.resources.getIdentifier("config_showNavigationBar", "bool", "android")
-            if (resourceId > 0 && !context.resources.getBoolean(resourceId)) {
-                return true
-            }
-        } catch (e: Exception) {}
-
+        // The hidden "android:bool/config_showNavigationBar" lookup that used to
+        // sit here is gone: the inset height already answers this — a gesture bar
+        // is thin, a three-button bar is not — and a hidden system resource is
+        // not something this app may rely on staying put.
         return false
     }
 

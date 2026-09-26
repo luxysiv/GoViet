@@ -45,8 +45,8 @@ class BackspaceHandler(
             controller.lastKeyPressTime = System.currentTimeMillis()
 
             if (controller.hasRealSelection(ic)) {
-                deleteSelection(ic)
                 controller.clearState()
+                deleteSelection(ic)
                 controller.isSelecting = false
                 controller.service.evaluateAutoShift()
                 return
@@ -83,8 +83,8 @@ class BackspaceHandler(
             controller.lastKeyPressTime = System.currentTimeMillis()
 
             if (controller.hasRealSelection(ic)) {
-                deleteSelection(ic)
                 controller.clearState()
+                deleteSelection(ic)
                 controller.isSelecting = false
                 controller.service.evaluateAutoShift()
                 return
@@ -180,7 +180,7 @@ class BackspaceHandler(
     /**
      * One unified re-sync path after any display-level edit: adopt the new display
      * back to canonical Telex raw keystrokes (when possible), rebuild the live
-     * state, update the composing text and restore the caret position.
+     * state, then write the preedit and place the caret in one editor operation.
      */
     private fun resyncPreeditFromDisplay(ic: InputConnection, display: String, caretInDisplay: Int) {
         if (display.isEmpty()) {
@@ -197,14 +197,8 @@ class BackspaceHandler(
             canonical ?: display, display, caretInDisplay, useVietnamese
         )
 
+        // writePreedit places the caret at the engine cursor on its own.
         replaceComposingText(ic, display)
-        if (controller.composingStartInEditor >= 0) {
-            if (caretInDisplay < display.length) {
-                controller.moveCursorTo(ic, controller.composingStartInEditor + caretInDisplay)
-            } else {
-                controller.registerCaretAsOurs(controller.composingStartInEditor + display.length)
-            }
-        }
     }
 
     /** Backspace on committed text immediately before the preedit, keeping it intact. */
@@ -212,10 +206,11 @@ class BackspaceHandler(
         val beforeText = ic.getTextBeforeCursor(128, 0)?.toString() ?: ""
         var charsToDelete = GraphemeEditor.getBackwardGraphemeLength(beforeText)
         if (charsToDelete <= 0) charsToDelete = 1
+        // Local state first: the delete shifts the whole preedit left, so the
+        // tracked range and caret move before the editor is touched — the next
+        // rewrite then targets exactly the text the editor will have.
+        controller.shiftPreeditStart(-charsToDelete)
         deleteBefore(ic, charsToDelete)
-        if (controller.composingStartInEditor >= charsToDelete) {
-            controller.composingStartInEditor -= charsToDelete
-        }
     }
 
     private fun resetPreeditToEmpty(ic: InputConnection) {
@@ -239,7 +234,12 @@ class BackspaceHandler(
         controller.inputEngine.composeAsVietnamese = true
         controller.inputEngine.setComposingRaw(macro.trigger)
         controller.composingCursorIndex = macro.trigger.length
-        replaceComposingText(ic, controller.compileRawDisplay())
+        val restored = controller.compileRawDisplay()
+        replaceComposingText(ic, restored)
+        // The preedit was written where the editor's caret was, so nothing
+        // tracked it: claim the range now, or the write's own echo arrives as a
+        // user move and clears the buffer this just restored.
+        controller.claimPreeditRangeAtCaret(ic, restored.length)
         return true
     }
 
@@ -310,14 +310,15 @@ class BackspaceHandler(
     fun replaceComposingText(ic: InputConnection, display: String) {
         if (controller.isImmediateCommitMode()) {
             val lastStr = controller.lastSetComposingText ?: ""
+            controller.lastSetComposingText = display
             sendBackspaceEvents(ic, lastStr.length)
             if (display.isNotEmpty()) {
                 ic.commitText(display, 1)
             }
         } else {
-            controller.syncPreeditDirect(ic, display)
+            // writePreedit owns lastSetComposingText and sets it before the write.
+            controller.writePreedit(ic, display)
         }
-        controller.lastSetComposingText = display
     }
 
     fun sendBackspaceEvents(ic: InputConnection, count: Int) {

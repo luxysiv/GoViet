@@ -10,7 +10,7 @@ android {
 
   defaultConfig {
     applicationId = "com.goviet.keyboard"
-    minSdk = 24
+    minSdk = 34
     targetSdk = 36
     versionCode = 1
     versionName = "1.0"
@@ -37,8 +37,7 @@ android {
 
   buildTypes {
     release {
-      isCrunchPngs = false
-      isMinifyEnabled = false
+      isMinifyEnabled = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       signingConfig = signingConfigs.getByName("debugConfig")
     }
@@ -52,6 +51,12 @@ android {
   }
   buildFeatures {
     viewBinding = true
+  }
+  // The app switches languages itself (LocalizedStrings rewrites the
+  // configuration, see MainActivity), so Play must not hand each device a
+  // language split: the app has to stay in control of which strings load.
+  bundle {
+    language { enableSplit = false }
   }
   testOptions { unitTests { isIncludeAndroidResources = true } }
 }

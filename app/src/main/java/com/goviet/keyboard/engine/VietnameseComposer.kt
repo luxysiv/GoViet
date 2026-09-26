@@ -1061,7 +1061,8 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
                 AppPreferences.registerSettingsPrefsListener(settingsPrefsListener!!)
             }
         } catch (e: Exception) {
-            System.err.println("[VietnameseComposer] Failed to load preferences: ${e.message}")
+            // Unreadable preferences leave the engine on its built-in defaults,
+            // which is a usable keyboard; that is the intended outcome here.
         }
     }
 
@@ -1077,7 +1078,7 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
             macroStore = MacroRepository(context).loadMacroStore()
             reset()
         } catch (e: Exception) {
-            System.err.println("[VietnameseComposer] Failed to reload macro store: ${e.message}")
+            // Keeps the macros loaded so far; the engine stays usable.
         }
     }
 
@@ -1095,7 +1096,7 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
             AppPreferences.setEngineConfig(config)
             applyConfig(config)
         } catch (e: Exception) {
-            System.err.println("[VietnameseComposer] Failed to save preferences: ${e.message}")
+            // The in-memory config was already applied; only the write failed.
         }
     }
 

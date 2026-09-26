@@ -73,7 +73,8 @@ class VietnameseInputMethodService : InputMethodService(), LifecycleOwner, ViewM
         currentInputMethodIndex.value = index
         _languageMode.value = if (index == 0) "VIE" else "ENG"
         inputProcessor.clearState()
-        currentInputConnection?.finishComposingText()
+        // No finishComposingText(): the preedit is written with replaceText, which
+        // never creates a composing span, so there is no composing region to close.
     }
 
     fun toggleLanguage() {
@@ -144,10 +145,6 @@ class VietnameseInputMethodService : InputMethodService(), LifecycleOwner, ViewM
         super.onConfigureWindow(win, isInputViewShow, isCandidatesKeyValue)
         win?.let { w ->
             w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS)
-            if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R) {
-                @Suppress("DEPRECATION")
-                w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION)
-            }
             w.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
         }
     }
@@ -441,10 +438,6 @@ class VietnameseInputMethodService : InputMethodService(), LifecycleOwner, ViewM
 
     fun updateNavigationBarColor(color: Int, isDark: Boolean) {
         keyboardUIManager.updateNavigationBarColor(color, isDark)
-    }
-
-    fun getNavigationBarHeight(): Int {
-        return keyboardUIManager.getNavigationBarHeight()
     }
 
     fun openSettings() {

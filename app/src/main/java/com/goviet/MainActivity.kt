@@ -127,7 +127,7 @@ class MainActivity : AppCompatActivity() {
                 object : ScreenView {
                     override fun getView(): View {
                         return TextView(this@MainActivity).apply {
-                            text = "Screen: $screen (Place Holder)"
+                            text = getString(R.string.debug_screen_placeholder, screen)
                             textSize = 20f
                             val padding = 16.dpPx(this@MainActivity)
                             setPadding(padding, padding, padding, padding)
@@ -146,7 +146,9 @@ class MainActivity : AppCompatActivity() {
             val intent = Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)
             startActivity(intent)
         } catch (e: Exception) {
-            e.printStackTrace()
+            // No settings activity on this device: the button does nothing.
+            // Swallowed deliberately so a missing screen cannot take the
+            // keyboard list down with it.
         }
     }
 
@@ -155,7 +157,7 @@ class MainActivity : AppCompatActivity() {
             val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
             imm.showInputMethodPicker()
         } catch (e: Exception) {
-            e.printStackTrace()
+            // Same reasoning as openIMESettings.
         }
     }
 

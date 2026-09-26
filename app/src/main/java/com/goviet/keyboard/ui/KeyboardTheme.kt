@@ -25,7 +25,7 @@ data class KeyboardTheme(
             var keyPressedBgColor = context.getColor(if (isDark) R.color.keyboard_key_pressed_bg_dark else R.color.keyboard_key_pressed_bg_light)
             var functionalKeyPressedBgColor = context.getColor(if (isDark) R.color.keyboard_functional_key_pressed_bg_dark else R.color.keyboard_functional_key_pressed_bg_light)
 
-            if (themeMode == "dynamic" && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            if (themeMode == "dynamic") {
                 try {
                     accentColor = context.getColor(if (isDark) android.R.color.system_accent1_300 else android.R.color.system_accent1_600)
                     backgroundColor = context.getColor(if (isDark) android.R.color.system_neutral1_900 else android.R.color.system_neutral1_50)

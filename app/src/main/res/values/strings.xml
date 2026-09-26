@@ -112,4 +112,10 @@
     <string name="pref_direct_w_desc">Gõ w ra w thay vì chuyển thành ư khi đứng đầu hoặc đứng một mình</string>
     <string name="pref_old_tone_title">Đặt dấu kiểu cũ (oà, uý)</string>
     <string name="pref_old_tone_desc">Đặt dấu thanh ở âm đệm (ví dụ: hoà, hoè, thuỷ thay vì hòa, hòe, thủy)</string>
+    <!-- Decorative row icon: announced by the row itself, never translated. -->
+    <string name="preference_icon" translatable="false">Preference Icon</string>
+
+    <string name="macro_expansion_preview">➔ %1$s</string>
+    <string name="debug_screen_placeholder">Screen: %1$s (Place Holder)</string>
+
 </resources>

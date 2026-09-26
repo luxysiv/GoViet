@@ -156,7 +156,7 @@ class MacroScreenView(private val activity: MainActivity) : ScreenView {
 
                 itemView.findViewById<TextView>(R.id.pref_title).text = entry.trigger
                 itemView.findViewById<TextView>(R.id.pref_summary).apply {
-                    text = "➔ ${entry.expansion}"
+                    text = activity.getString(R.string.macro_expansion_preview, entry.expansion)
                     visibility = View.VISIBLE
                 }
 
