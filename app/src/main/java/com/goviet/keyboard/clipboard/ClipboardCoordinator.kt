@@ -4,7 +4,6 @@ import com.goviet.keyboard.VietnameseInputMethodService
 import android.content.ClipboardManager
 import android.content.Context
 import android.util.Log
-import android.view.inputmethod.InputConnection
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -50,14 +49,9 @@ class ClipboardCoordinator(
     }
 
     fun selectClipboard(text: String) {
-        val ic: InputConnection = service.currentInputConnection ?: return
-        ic.beginBatchEdit()
-        try {
-            service.inputProcessor.commitAndFinishing()
-            ic.commitText(text, 1)
-        } finally {
-            ic.endBatchEdit()
-        }
+        // Same rule as any other literal insertion: the composing range is
+        // settled inside the transaction, not around it.
+        service.inputProcessor.insertLiteral(text)
     }
 
     fun clearClipboardHistory() {

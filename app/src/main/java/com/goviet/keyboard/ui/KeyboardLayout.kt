@@ -7,7 +7,7 @@ package com.goviet.keyboard.ui
 object KeyboardLayout {
 
     fun buildKeyRows(
-        mode: String,
+        page: LetterPage,
         shiftState: Int,
         languageMode: String,
         imeOptions: Int,
@@ -16,13 +16,13 @@ object KeyboardLayout {
     ): Pair<List<Key>, List<List<Key>>> {
         val keys = mutableListOf<Key>()
 
-        when (mode) {
-            "ABC" -> buildAlphanumericKeys(keys, shiftState, isSplit)
-            else -> buildSymbolKeys(keys, mode, isSplit)
+        when (page) {
+            LetterPage.LETTERS -> buildAlphanumericKeys(keys, shiftState, isSplit)
+            else -> buildSymbolKeys(keys, page, isSplit)
         }
 
         resolveLabels(keys, shiftState, languageMode, imeOptions, inputType)
-        return Pair(keys, getRows(keys, mode))
+        return Pair(keys, getRows(keys, page))
     }
 
     fun resolveLabels(
@@ -156,8 +156,8 @@ object KeyboardLayout {
         }
     }
 
-    private fun buildSymbolKeys(keys: MutableList<Key>, mode: String, isSplit: Boolean = false) {
-        val isPage2 = mode == "SYM2"
+    private fun buildSymbolKeys(keys: MutableList<Key>, page: LetterPage, isSplit: Boolean = false) {
+        val isPage2 = page == LetterPage.SYMBOLS_2
 
         val row0 = if (!isPage2) {
             listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0")
@@ -242,11 +242,11 @@ object KeyboardLayout {
         ))
     }
 
-    fun getRows(keys: List<Key>, mode: String): List<List<Key>> {
+    fun getRows(keys: List<Key>, page: LetterPage): List<List<Key>> {
         val rows = mutableListOf<List<Key>>()
         if (keys.isEmpty()) return rows
 
-        if (mode == "ABC") {
+        if (page == LetterPage.LETTERS) {
             if (keys.size >= 10) rows.add(keys.subList(0, 10))
             if (keys.size >= 20) rows.add(keys.subList(10, 20))
             if (keys.size >= 29) rows.add(keys.subList(20, 29))

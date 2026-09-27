@@ -358,7 +358,8 @@ class KeyTouchHandler(
 
     private fun isPreviewableKey(key: Key): Boolean = key.code !in previewExcludedCodes
 
-    fun findKeyByCoordinates(x: Float, y: Float): Key? = findKeyAt(keys(), x, y)
+    fun findKeyByCoordinates(x: Float, y: Float): Key? =
+        findKeyAt(keys(), x, y, KeyGeometry.minTouchPx(density))
 
     fun cleanup() {
         backspaceRepeatHandler.stop()

@@ -115,4 +115,8 @@
     <string name="macro_expansion_preview">➔ %1$s</string>
     <string name="debug_screen_placeholder">Screen: %1$s (Place Holder)</string>
 
+    <!-- T-pad keys, kept in step with values/strings.xml. -->
+    <string name="key_space">Space</string>
+    <string name="tpad_paste">Paste</string>
+    <string name="tpad_backspace">Backspace</string>
 </resources>

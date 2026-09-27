@@ -27,6 +27,7 @@ import com.goviet.core.density
 import com.goviet.core.dpPx
 import com.goviet.keyboard.util.IconDrawer
 import com.goviet.keyboard.VietnameseInputMethodService
+import com.goviet.keyboard.EditorFieldIntent
 import com.goviet.keyboard.clipboard.ClipboardEntity
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -41,7 +42,7 @@ class KeyboardRootView @JvmOverloads constructor(
 
     // Properties replacing remember { mutableStateOf(...) }
     var shiftState: Int = 0
-    var keyboardMode: String = "QWERTY"
+    var panelState: PanelState = PanelState.Letters
     var clipboardItems: List<ClipboardEntity> = emptyList()
     var languageMode: String = "VIE"
     var navigationBarHeightRaw: Int = 0
@@ -162,7 +163,7 @@ class KeyboardRootView @JvmOverloads constructor(
         // Setup TraditionalClipboardView callbacks
         traditionalClipboardView.onSelect = { text ->
             service.selectClipboard(text)
-            service._keyboardMode.value = "QWERTY"
+            service._panelState.value = PanelState.Letters
         }
         traditionalClipboardView.onDeleteItem = { item ->
             service.deleteClipboardItem(item)
@@ -172,22 +173,13 @@ class KeyboardRootView @JvmOverloads constructor(
         // Setup TraditionalEmojiView callbacks
         traditionalEmojiView.onSelectEmoji = { emoji ->
             service.addRecentEmoji(emoji)
-            val ic = service.currentInputConnection
-            if (ic != null) {
-                ic.beginBatchEdit()
-                try {
-                    service.inputProcessor.commitAndFinishing()
-                    ic.commitText(emoji, 1)
-                } finally {
-                    ic.endBatchEdit()
-                }
-            }
+            service.insertLiteral(emoji)
         }
         traditionalEmojiView.onBackToLetters = {
-            service._keyboardMode.value = "QWERTY"
+            service._panelState.value = PanelState.Letters
         }
         traditionalEmojiView.onSwitchToSymbols = {
-            service._keyboardMode.value = "SYMBOL_PICKER"
+            service._panelState.value = PanelState.SymbolPicker
         }
         traditionalEmojiView.onKeyPress = { key ->
             onKeyPress(key)
@@ -197,7 +189,7 @@ class KeyboardRootView @JvmOverloads constructor(
         traditionalEditPadView.onAction = { code ->
             when (code) {
                 "CLOSE" -> {
-                    service._keyboardMode.value = "QWERTY"
+                    service._panelState.value = PanelState.Letters
                 }
                 "BACKSPACE" -> {
                     service.handleKeyPress("BACKSPACE")
@@ -211,23 +203,23 @@ class KeyboardRootView @JvmOverloads constructor(
         // Setup TraditionalTpadView callbacks
         traditionalTpadView.onKey = { key ->
             if (key == "ABC" || key == "QWERTY") {
-                service._keyboardMode.value = "QWERTY"
+                service._panelState.value = PanelState.Letters
             } else if (key == "SYMBOLS") {
-                service._keyboardMode.value = "SYMBOLS"
+                service._panelState.value = PanelState.SymbolPage
             } else {
                 onKeyPress(key)
             }
         }
         traditionalTpadView.onSwitchToABC = {
-            service._keyboardMode.value = "QWERTY"
+            service._panelState.value = PanelState.Letters
         }
         traditionalTpadView.onSwitchToSymbols = {
-            service._keyboardMode.value = "SYMBOLS"
+            service._panelState.value = PanelState.SymbolPage
         }
     }
     
     fun handleSettingsBack(): Boolean {
-        if (keyboardMode == "SETTINGS" && traditionalSettingsView.activeSubMenu != TraditionalSettingsView.SubMenu.NONE) {
+        if (panelState == PanelState.Settings && traditionalSettingsView.activeSubMenu != TraditionalSettingsView.SubMenu.NONE) {
             traditionalSettingsView.goBackToMainMenu()
             return true
         }
@@ -255,9 +247,9 @@ class KeyboardRootView @JvmOverloads constructor(
                 }
             }
             launch {
-                service._keyboardMode.collect { value ->
-                    keyboardMode = value
-                    if (value == "QWERTY") {
+                service._panelState.collect { value ->
+                    panelState = value
+                    if (value == PanelState.Letters) {
                         traditionalSettingsView.activeSubMenu = TraditionalSettingsView.SubMenu.NONE
                     }
                     render()
@@ -297,9 +289,9 @@ class KeyboardRootView @JvmOverloads constructor(
 
     private fun updateShiftOnly(value: Int) {
         this.shiftState = value
-        val isLetterGridActive = when (keyboardMode) {
-            "SETTINGS", "CLIPBOARD", "EMOJI", "EDIT_PAD", "TPAD", "SYMBOL_PICKER" -> false
-            else -> true
+        val isLetterGridActive = when (panelState) {
+            PanelState.Letters, PanelState.SymbolPage -> true
+            else -> false
         }
         if (isLetterGridActive) {
             standardLetterGrid.shiftState = value
@@ -309,7 +301,7 @@ class KeyboardRootView @JvmOverloads constructor(
 
     private fun updateClipboardItemsOnly(value: List<ClipboardEntity>) {
         this.clipboardItems = value
-        if (keyboardMode == "CLIPBOARD") {
+        if (panelState == PanelState.Clipboard) {
             traditionalClipboardView.items = value
             traditionalClipboardView.invalidate()
         }
@@ -317,21 +309,21 @@ class KeyboardRootView @JvmOverloads constructor(
 
     private fun updateLanguageModeOnly(value: String) {
         this.languageMode = value
-        when (keyboardMode) {
-            "EMOJI" -> {
+        when (panelState) {
+            PanelState.Emoji -> {
                 traditionalEmojiView.currentLanguageMode = value
                 traditionalEmojiView.invalidate()
             }
-            "SYMBOL_PICKER" -> {
+            PanelState.SymbolPicker -> {
                 symbolsPickerGrid.currentLanguageMode = value
                 symbolsPickerGrid.invalidate()
             }
-            "SETTINGS", "CLIPBOARD", "EDIT_PAD", "TPAD" -> {
-                // these panels do not use language mode directly or do not have languageMode fields
-            }
-            else -> {
+            PanelState.Letters, PanelState.SymbolPage -> {
                 standardLetterGrid.languageMode = value
                 standardLetterGrid.invalidate()
+            }
+            PanelState.Settings, PanelState.Clipboard, PanelState.EditPad, PanelState.Tpad -> {
+                // these panels do not use language mode directly or do not have languageMode fields
             }
         }
     }
@@ -394,15 +386,14 @@ class KeyboardRootView @JvmOverloads constructor(
             it.updateTheme(theme)
         }
 
-        val targetPanel = when (keyboardMode) {
-            "SETTINGS" -> traditionalSettingsView
-            "CLIPBOARD" -> traditionalClipboardView
-            "EMOJI" -> traditionalEmojiView
-            "EDIT_PAD" -> traditionalEditPadView
-            "TPAD" -> traditionalTpadView
-            "SYMBOLS" -> standardLetterGrid
-            "SYMBOL_PICKER" -> symbolsPickerGrid
-            else -> standardLetterGrid
+        val targetPanel = when (panelState) {
+            PanelState.Settings -> traditionalSettingsView
+            PanelState.Clipboard -> traditionalClipboardView
+            PanelState.Emoji -> traditionalEmojiView
+            PanelState.EditPad -> traditionalEditPadView
+            PanelState.Tpad -> traditionalTpadView
+            PanelState.SymbolPicker -> symbolsPickerGrid
+            PanelState.Letters, PanelState.SymbolPage -> standardLetterGrid
         }
 
         if (isLandscape && targetPanel != standardLetterGrid) {
@@ -414,8 +405,8 @@ class KeyboardRootView @JvmOverloads constructor(
 
         val oldPanels = allPanels.filter { it != targetPanel }
 
-        when (keyboardMode) {
-            "SETTINGS" -> {
+        when (panelState) {
+            PanelState.Settings -> {
                 if (traditionalSettingsView.visibility != VISIBLE) {
                     traditionalSettingsView.activeSubMenu = TraditionalSettingsView.SubMenu.NONE
                 }
@@ -427,10 +418,10 @@ class KeyboardRootView @JvmOverloads constructor(
                 traditionalSettingsView.themeMode = AppPreferences.getThemeMode()
                 traditionalSettingsView.bottomPaddingLevel = AppPreferences.getBottomPaddingLevel()
             }
-            "CLIPBOARD" -> {
+            PanelState.Clipboard -> {
                 traditionalClipboardView.items = clipboardItems
             }
-            "EMOJI" -> {
+            PanelState.Emoji -> {
                 traditionalEmojiView.currentImeOptions = service.currentInputEditorInfo?.imeOptions ?: 0
                 traditionalEmojiView.currentInputType = service.currentInputEditorInfo?.inputType ?: 0
                 traditionalEmojiView.currentLanguageMode = languageMode
@@ -447,52 +438,50 @@ class KeyboardRootView @JvmOverloads constructor(
                 }
                 traditionalEmojiView.emojisList = rawEmojis
             }
-            "EDIT_PAD" -> {
+            PanelState.EditPad -> {
                 traditionalEditPadView.isSelecting = service.inputProcessor.isSelecting
                 traditionalEditPadView.panelBgColor = if (isDark) 0xFF1E2431.toInt() else 0xFFF3F4F6.toInt()
                 traditionalEditPadView.errorColor = if (isDark) 0xFFCF6679.toInt() else 0xFFB00020.toInt()
                 traditionalEditPadView.keyStyle = AppPreferences.getKeyStyle()
             }
-            "TPAD" -> {
+            PanelState.Tpad -> {
                 traditionalTpadView.keyStyle = AppPreferences.getKeyStyle()
 
                 val editorInfo = service.currentInputEditorInfo
                 val inputType = editorInfo?.inputType ?: 0
-                val hintLower = editorInfo?.hintText?.toString()?.lowercase() ?: ""
-                val fieldNameLower = editorInfo?.fieldName?.lowercase() ?: ""
-                val isNumericPassword = (inputType and android.text.InputType.TYPE_MASK_CLASS) == android.text.InputType.TYPE_CLASS_NUMBER &&
-                        (inputType and android.text.InputType.TYPE_MASK_VARIATION) == android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD
-                val isOtp = isNumericPassword ||
-                        hintLower.contains("otp") || hintLower.contains("code") || hintLower.contains("pin") || hintLower.contains("mã") || hintLower.contains("verify") ||
-                        fieldNameLower.contains("otp") || fieldNameLower.contains("code") || fieldNameLower.contains("pin") || fieldNameLower.contains("mã") || fieldNameLower.contains("verify")
+                // The same answer the service used to pick this panel, from the
+                // same place: a guess worked out in two files was a guess that
+                // could disagree with itself.
+                val isOtp = EditorFieldIntent.isOneTimeCode(editorInfo?.hintText, editorInfo?.fieldName) ||
+                    EditorFieldIntent.isNumericPassword(inputType)
 
                 traditionalTpadView.currentEditorInputType = inputType
                 traditionalTpadView.isOtpField = isOtp
                 traditionalTpadView.currentImeOptions = editorInfo?.imeOptions ?: 0
                 traditionalTpadView.currentInputType = inputType
             }
-            "SYMBOLS" -> {
-                standardLetterGrid.keyboardMode = "SYMBOLS"
+            PanelState.SymbolPage -> {
+                standardLetterGrid.page = LetterPage.SYMBOLS_1
                 standardLetterGrid.shiftState = shiftState
                 standardLetterGrid.languageMode = languageMode
                 standardLetterGrid.imeOptions = service.currentInputEditorInfo?.imeOptions ?: 0
                 standardLetterGrid.inputType = service.currentInputEditorInfo?.inputType ?: 0
                 standardLetterGrid.onKey = { key ->
                     if (key == "ABC" || key == "QWERTY") {
-                        service._keyboardMode.value = "QWERTY"
+                        service._panelState.value = PanelState.Letters
                     } else if (key == "EMOJI") {
-                        service._keyboardMode.value = "EMOJI"
+                        service._panelState.value = PanelState.Emoji
                     } else if (key == "SYMBOL_PICKER") {
-                        service._keyboardMode.value = "SYMBOL_PICKER"
+                        service._panelState.value = PanelState.SymbolPicker
                     } else if (key == "TPAD") {
-                        service._keyboardMode.value = "TPAD"
+                        service._panelState.value = PanelState.Tpad
                     } else {
                         onKeyPress(key)
                     }
                 }
                 standardLetterGrid.onSwitchToSymbols = {}
             }
-            "SYMBOL_PICKER" -> {
+            PanelState.SymbolPicker -> {
                 symbolsPickerGrid.service = service
                 symbolsPickerGrid.activeTab = activeSymbolsTab
                 symbolsPickerGrid.onTabChange = { tab ->
@@ -501,11 +490,11 @@ class KeyboardRootView @JvmOverloads constructor(
                 }
                 symbolsPickerGrid.onKey = { key ->
                     if (key == "ABC" || key == "QWERTY") {
-                        service._keyboardMode.value = "QWERTY"
+                        service._panelState.value = PanelState.Letters
                     } else if (key == "EMOJI") {
-                        service._keyboardMode.value = "EMOJI"
+                        service._panelState.value = PanelState.Emoji
                     } else if (key == "SYMBOLS") {
-                        service._keyboardMode.value = "SYMBOLS"
+                        service._panelState.value = PanelState.SymbolPage
                     } else if (key == "BACKSPACE") {
                         service.handleKeyPress("BACKSPACE")
                     } else if (key == "DELETE_WORD") {
@@ -519,14 +508,12 @@ class KeyboardRootView @JvmOverloads constructor(
                 } else {
                     PickerData.SYMBOLS_MAP[activeSymbolsTab] ?: emptyList()
                 }
-                symbolsPickerGrid.activePage = activeSymbolsTab
-                symbolsPickerGrid.pagesCount = 9
                 symbolsPickerGrid.currentImeOptions = service.currentInputEditorInfo?.imeOptions ?: 0
                 symbolsPickerGrid.currentInputType = service.currentInputEditorInfo?.inputType ?: 0
                 symbolsPickerGrid.currentLanguageMode = languageMode
             }
-            else -> {
-                standardLetterGrid.keyboardMode = keyboardMode
+            PanelState.Letters -> {
+                standardLetterGrid.page = LetterPage.LETTERS
                 standardLetterGrid.shiftState = shiftState
                 standardLetterGrid.languageMode = languageMode
                 standardLetterGrid.imeOptions = service.currentInputEditorInfo?.imeOptions ?: 0
@@ -535,7 +522,7 @@ class KeyboardRootView @JvmOverloads constructor(
                     onKeyPress(key)
                 }
                 standardLetterGrid.onSwitchToSymbols = {
-                    service._keyboardMode.value = "SYMBOLS"
+                    service._panelState.value = PanelState.SymbolPage
                 }
                 standardLetterGrid.updateTheme(theme)
             }
@@ -719,18 +706,18 @@ class KeyboardRootView @JvmOverloads constructor(
 }
 
 // Programmatic Top Header Layout
-private enum class DrawerButton(val id: String, val mode: String) {
-    CLIPBOARD("btn_clipboard", "CLIPBOARD"),
-    EDIT_PAD("btn_editpad", "EDIT_PAD"),
-    EMOJI("btn_emoji", "EMOJI"),
-    LANGUAGE("btn_language", "LANGUAGE"),
-    TPAD("btn_tpad", "TPAD"),
-    SETTINGS("btn_settings", "SETTINGS");
+private enum class DrawerButton(val id: String, val panel: PanelState?) {
+    CLIPBOARD("btn_clipboard", PanelState.Clipboard),
+    EDIT_PAD("btn_editpad", PanelState.EditPad),
+    EMOJI("btn_emoji", PanelState.Emoji),
+    LANGUAGE("btn_language", null),
+    TPAD("btn_tpad", PanelState.Tpad),
+    SETTINGS("btn_settings", PanelState.Settings);
 
     companion object {
         val ALL = entries
-        fun toggleMode(currentMode: String, button: DrawerButton): String =
-            if (currentMode == button.mode) "QWERTY" else button.mode
+        fun toggleMode(current: PanelState, button: DrawerButton): PanelState =
+            if (current == button.panel) PanelState.Letters else button.panel ?: current
     }
 }
 
@@ -739,9 +726,9 @@ class UnifiedTopHeaderView(context: Context, private val rootView: KeyboardRootV
     enum class HeaderMode { SYMBOL_PICKER, EMOJI, STANDARD }
 
     private val currentHeaderMode: HeaderMode
-        get() = when (rootView.keyboardMode) {
-            "SYMBOL_PICKER" -> HeaderMode.SYMBOL_PICKER
-            "EMOJI" -> HeaderMode.EMOJI
+        get() = when (rootView.panelState) {
+            PanelState.SymbolPicker -> HeaderMode.SYMBOL_PICKER
+            PanelState.Emoji -> HeaderMode.EMOJI
             else -> HeaderMode.STANDARD
         }
 
@@ -837,6 +824,63 @@ class UnifiedTopHeaderView(context: Context, private val rootView: KeyboardRootV
         val isActive: Boolean
     )
 
+    /**
+     * The toolbar buttons, in the order they are drawn and hit-tested.
+     *
+     * The list was spelled out three times — once as objects to draw, once as
+     * ids to hit-test, and once per orientation inside each — and a touch
+     * answered from a different list than the one that drew the button under
+     * the finger. One list, and the hit test reads the same one the draw does.
+     *
+     * Landscape is the same six plus the layout-mode button, which has no place
+     * in a portrait row this narrow.
+     */
+    private val portraitShortcutIds = listOf(
+        "btn_clipboard", "btn_editpad", "btn_emoji", "btn_language", "btn_tpad", "btn_settings"
+    )
+
+    private val landscapeShortcutIds = listOf(
+        "btn_clipboard", "btn_editpad", "btn_emoji", "btn_language", "btn_tpad",
+        "btn_layout_mode", "btn_settings"
+    )
+
+    private fun shortcutIds(isLandscape: Boolean): List<String> =
+        if (isLandscape) landscapeShortcutIds else portraitShortcutIds
+
+    private fun isActiveShortcut(id: String, panelState: PanelState): Boolean = when (id) {
+        "btn_clipboard" -> panelState == PanelState.Clipboard
+        "btn_editpad" -> panelState == PanelState.EditPad
+        "btn_emoji" -> panelState == PanelState.Emoji
+        "btn_tpad" -> panelState == PanelState.Tpad
+        "btn_settings" -> panelState == PanelState.Settings
+        else -> false
+    }
+
+    private var cachedShortcuts: List<ShortcutSpec> = emptyList()
+    private var cachedShortcutsPanelState: PanelState? = null
+    private var cachedShortcutsLandscape: Boolean? = null
+
+    /**
+     * The buttons to draw, rebuilt only when the panel or the orientation
+     * changes it.
+     *
+     * These were seven objects and a list on every frame of a toolbar that
+     * animates, which is a garbage collection during the animation for a
+     * description of the toolbar that changes when you switch panels.
+     */
+    private fun shortcutSpecs(isLandscape: Boolean): List<ShortcutSpec> {
+        val panelState = rootView.panelState
+        if (cachedShortcutsLandscape == isLandscape && cachedShortcutsPanelState == panelState) {
+            return cachedShortcuts
+        }
+        cachedShortcuts = shortcutIds(isLandscape).map { id ->
+            ShortcutSpec(id, isActiveShortcut(id, panelState))
+        }
+        cachedShortcutsLandscape = isLandscape
+        cachedShortcutsPanelState = panelState
+        return cachedShortcuts
+    }
+
     init {
         // Initial setup
         layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, (38 * density).toInt())
@@ -864,7 +908,7 @@ class UnifiedTopHeaderView(context: Context, private val rootView: KeyboardRootV
     }
 
     fun updateUI() {
-        val isBackMode = (rootView.keyboardMode == "SETTINGS" || rootView.keyboardMode == "CLIPBOARD" || rootView.keyboardMode == "EDIT_PAD" || rootView.keyboardMode == "TPAD")
+        val isBackMode = rootView.panelState.isDrawerPanel
         if (isBackMode) {
             toolbarAnimator?.cancel()
             toolbarProgress = 0f
@@ -1060,7 +1104,7 @@ class UnifiedTopHeaderView(context: Context, private val rootView: KeyboardRootV
             }
             HeaderMode.STANDARD -> {
                 // Left Toggle Button
-                val isBackMode = (rootView.keyboardMode == "SETTINGS" || rootView.keyboardMode == "CLIPBOARD" || rootView.keyboardMode == "EDIT_PAD" || rootView.keyboardMode == "TPAD")
+                val isBackMode = rootView.panelState.isDrawerPanel
                 val toggleCx = 22f * density
                 val toggleCy = h / 2f
 
@@ -1144,26 +1188,7 @@ class UnifiedTopHeaderView(context: Context, private val rootView: KeyboardRootV
                     val shortcutsRight = w - backBtnWidth
                     val availableWidth = shortcutsRight - shortcutsLeft
 
-                    val shortcuts = if (isLandscape) {
-                        listOf(
-                            ShortcutSpec("btn_clipboard", rootView.keyboardMode == "CLIPBOARD"),
-                            ShortcutSpec("btn_editpad", rootView.keyboardMode == "EDIT_PAD"),
-                            ShortcutSpec("btn_emoji", rootView.keyboardMode == "EMOJI"),
-                            ShortcutSpec("btn_language", false),
-                            ShortcutSpec("btn_tpad", rootView.keyboardMode == "TPAD"),
-                            ShortcutSpec("btn_layout_mode", false),
-                            ShortcutSpec("btn_settings", rootView.keyboardMode == "SETTINGS")
-                        )
-                    } else {
-                        listOf(
-                            ShortcutSpec("btn_clipboard", rootView.keyboardMode == "CLIPBOARD"),
-                            ShortcutSpec("btn_editpad", rootView.keyboardMode == "EDIT_PAD"),
-                            ShortcutSpec("btn_emoji", rootView.keyboardMode == "EMOJI"),
-                            ShortcutSpec("btn_language", false),
-                            ShortcutSpec("btn_tpad", rootView.keyboardMode == "TPAD"),
-                            ShortcutSpec("btn_settings", rootView.keyboardMode == "SETTINGS")
-                        )
-                    }
+                    val shortcuts = shortcutSpecs(isLandscape)
 
                     val itemWidth = availableWidth / shortcuts.size.toFloat()
 
@@ -1251,7 +1276,7 @@ class UnifiedTopHeaderView(context: Context, private val rootView: KeyboardRootV
                 }
 
                 val isLandscape = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
-                val isBackMode = (rootView.keyboardMode == "SETTINGS" || rootView.keyboardMode == "CLIPBOARD" || rootView.keyboardMode == "EDIT_PAD" || rootView.keyboardMode == "TPAD")
+                val isBackMode = rootView.panelState.isDrawerPanel
 
                 val shouldShowToolbar = toolbarProgress >= 0.99f && !isBackMode
                 if (shouldShowToolbar) {
@@ -1259,26 +1284,7 @@ class UnifiedTopHeaderView(context: Context, private val rootView: KeyboardRootV
                     val shortcutsRight = w - backBtnWidth
                     if (x >= shortcutsLeft && x <= shortcutsRight) {
                         val availableWidth = shortcutsRight - shortcutsLeft
-                        val shortcutsList = if (isLandscape) {
-                            listOf(
-                                "btn_clipboard",
-                                "btn_editpad",
-                                "btn_emoji",
-                                "btn_language",
-                                "btn_tpad",
-                                "btn_layout_mode",
-                                "btn_settings"
-                            )
-                        } else {
-                            listOf(
-                                "btn_clipboard",
-                                "btn_editpad",
-                                "btn_emoji",
-                                "btn_language",
-                                "btn_tpad",
-                                "btn_settings"
-                            )
-                        }
+                        val shortcutsList = shortcutIds(isLandscape)
                         val itemWidth = availableWidth / shortcutsList.size.toFloat()
                         val index = ((x - shortcutsLeft) / itemWidth).toInt()
                         if (index in shortcutsList.indices) {
@@ -1294,16 +1300,16 @@ class UnifiedTopHeaderView(context: Context, private val rootView: KeyboardRootV
     private fun handleButtonClick(id: String) {
         when (id) {
             "back" -> {
-                rootView.service._keyboardMode.value = "QWERTY"
+                rootView.service._panelState.value = PanelState.Letters
             }
             "toggle" -> {
-                val km = rootView.keyboardMode
-                if (km == "SETTINGS") {
+                val panel = rootView.panelState
+                if (panel == PanelState.Settings) {
                     if (!rootView.handleSettingsBack()) {
-                        rootView.service._keyboardMode.value = "QWERTY"
+                        rootView.service._panelState.value = PanelState.Letters
                     }
-                } else if (km == "CLIPBOARD" || km == "EDIT_PAD" || km == "TPAD") {
-                    rootView.service._keyboardMode.value = "QWERTY"
+                } else if (panel.isDrawerPanel) {
+                    rootView.service._panelState.value = PanelState.Letters
                 } else {
                     rootView.isToolbarOpen = !rootView.isToolbarOpen
                     setToolbarOpen(rootView.isToolbarOpen)
@@ -1333,7 +1339,7 @@ class UnifiedTopHeaderView(context: Context, private val rootView: KeyboardRootV
                 if (btn == DrawerButton.LANGUAGE) {
                     rootView.service.toggleLanguage()
                 } else {
-                    rootView.service._keyboardMode.value = DrawerButton.toggleMode(rootView.keyboardMode, btn)
+                    rootView.service._panelState.value = DrawerButton.toggleMode(rootView.panelState, btn)
                 }
             }
             else -> {

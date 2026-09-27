@@ -11,6 +11,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.widget.OverScroller
 import kotlin.math.max
+import kotlin.math.min
 
 import com.goviet.core.density
 
@@ -19,12 +20,28 @@ class TraditionalEmojiView @JvmOverloads constructor(
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0
 ) : BaseKeyGridView(context, attrs, defStyleAttr) {
+    /**
+     * The emoji and the control row, as nodes for a screen reader.
+     *
+     * The panel is one rectangle to a screen reader otherwise, and the emoji
+     * are the whole point of the panel.
+     */
+    private val accessibility = KeyGridTouchHelper(this) { accessibilityCells() }
+
+
 
     // Properties
     var emojisList: List<String> = emptyList()
         set(value) {
+            val changed = field != value
             field = value
-            calculateLayout()
+            if (changed) {
+                calculateLayout()
+                // A new tab is a different set of keys, and a screen reader
+                // still holding the old nodes would read out emoji this tab
+                // does not have.
+                accessibility.invalidateRoot()
+            }
             invalidate()
         }
 
@@ -52,21 +69,22 @@ class TraditionalEmojiView @JvmOverloads constructor(
     var onSwitchToSymbols: (() -> Unit)? = null
     var onKeyPress: ((String) -> Unit)? = null
 
-    private val keysInfo = listOf(
-        Key(code = "ABC", label = "ABC", weight = 1.3f, isFunctional = true),
-        Key(code = ",", label = ",", weight = 1.0f),
-        Key(code = "!?#", label = "!?#", weight = 1.1f, isFunctional = true),
-        Key(code = "SPACE", label = "", weight = 3.4f),
-        Key(code = "BACKSPACE", label = "⌫", weight = 1.2f, isFunctional = true),
-        Key(code = "ENTER", label = "⏎", weight = 1.3f, isSpecialEnter = true)
-    )
+    private val bottomBar = BottomBarSpec.forEmoji(enterLabel = "⏎")
+
+    private val keysInfo = bottomBar.buildKeys()
 
     // Layout values
     private var totalContentHeight = 0f
-    private var colW = 0f
-    private var emojiAreaLeft = 0f
+    internal var colW = 0f
+
+    /** How many rows the current list takes, the same arithmetic as the draw. */
+    internal val emojiRowCount: Int
+        get() = (emojisList.size + EMOJI_COLS - 1) / EMOJI_COLS
+    // Internal rather than private so the touch target test can assert against
+    // the real grid instead of a reimplementation of its arithmetic.
+    internal var emojiAreaLeft = 0f
     private var emojiAreaRight = 0f
-    private var emojiAreaTop = 0f
+    internal var emojiAreaTop = 0f
     private var emojiAreaBottom = 0f
     private var emojiAreaWidth = 0f
     private var emojiAreaHeight = 0f
@@ -83,59 +101,106 @@ class TraditionalEmojiView @JvmOverloads constructor(
     private var pressedEmojiIndex = -1
     private val pressedEmojiRect = RectF()
 
-    private val horizontalSpacing = 4.5f * density
     private val verticalSpacing = 7.0f * density
 
-    init {
-        calculateLayout()
+    /**
+     * The emoji the viewport shows, in the order they are drawn, plus the
+     * control row beneath them.
+     *
+     * The bounds are the emoji's own square inset by the same 2dp the pressed
+     * emoji is inset by, so a node is framed where the emoji is and not
+     * slightly larger than the glyph. Only what the viewport shows: a row
+     * scrolled away is not on screen, and a screen reader that walks into an
+     * off-screen node is reading a panel that is not there.
+     */
+    /**
+     * The emoji the viewport shows, in the order they are drawn.
+     *
+     * Shared with [onDraw] so the nodes are the drawn cells rather than a second
+     * window over the same grid: two copies of this would be free to drift, and
+     * a node set that has drifted points a screen reader at an empty spot.
+     */
+    internal fun visibleEmojiIndices(): IntRange {
+        if (colW <= 0f) return 0 until 0
+        val firstRow = max(0, (scrollOffset / colW).toInt())
+        val pastLastRow = ((scrollOffset + emojiAreaHeight) / colW).toInt() + 1
+        return (firstRow * EMOJI_COLS) until
+            min(emojisList.size, pastLastRow.coerceAtMost(emojiRowCount) * EMOJI_COLS)
     }
 
-    private fun getBottomRowHeight(): Float {
-        return KeyboardUtils.calculateStandardRowHeight(height.toFloat(), density, 5, verticalSpacing)
+    internal fun accessibilityCells(): List<KeyGridCell> {
+        if (width <= 0 || height <= 0 || colW <= 0f) return emptyList()
+        val cells = mutableListOf<KeyGridCell>()
+        val inset = 2f * density
+
+        for (index in visibleEmojiIndices()) {
+            val emoji = emojisList[index]
+            val cellLeft = emojiAreaLeft + (index % EMOJI_COLS) * colW
+            val cellTop = emojiAreaTop + (index / EMOJI_COLS) * colW - scrollOffset
+            cells.add(
+                KeyGridCell(
+                    bounds = RectF(
+                        cellLeft + inset,
+                        cellTop + inset,
+                        cellLeft + colW - inset,
+                        cellTop + colW - inset
+                    ),
+                    description = emoji,
+                    onActivate = { onSelectEmoji?.invoke(emoji) }
+                )
+            )
+        }
+
+        for (key in keysInfo) {
+            cells.add(
+                KeyGridCell(
+                    bounds = RectF(key.visualRect),
+                    description = KeyboardUtils.keyNodeDescription(context, key, currentImeOptions, currentInputType),
+                    onActivate = { onKeyPress?.invoke(key.code) }
+                )
+            )
+        }
+        return cells
+    }
+
+    /** Forwards a screen reader's hover to the emoji and the control row. */
+    override fun dispatchHoverEvent(event: MotionEvent): Boolean =
+        accessibility.dispatchHoverEvent(event) || super.dispatchHoverEvent(event)
+
+    override fun performClick(): Boolean {
+        super.performClick()
+        return true
+    }
+
+    init {
+        accessibility.attach()
+        calculateLayout()
     }
 
     private fun calculateLayout() {
         if (width <= 0 || height <= 0) return
 
-        // 1. Calculate bottom row bounds matching StandardLetterGridView and SymbolsPickerGridView
-        val paddingLeft = 4f * density
-        val paddingRight = 4f * density
-        val paddingBottom = 4f * density
-
-        val usableWidth = width - paddingLeft - paddingRight
-        val bottomRowHeight = getBottomRowHeight()
-        val bottomContainerTop = height - bottomRowHeight - paddingBottom
-        val bottomContainerBottom = height - paddingBottom
-        
-        val totalSpacings = keysInfo.size - 1
-        val widthAvailable = usableWidth - (horizontalSpacing * totalSpacings)
-        val totalWeight = keysInfo.sumOf { it.weight.toDouble() }.toFloat()
-        val unitWidth = widthAvailable / totalWeight
-
-        var curX = paddingLeft
-        for (key in keysInfo) {
-            val keyBoundingW = key.weight * unitWidth
-            key.rect.set(
-                curX,
-                bottomContainerTop,
-                curX + keyBoundingW,
-                bottomContainerBottom
-            )
-            key.visualRect.set(key.rect)
-            key.applyShadow(density)
-            curX += keyBoundingW + horizontalSpacing
-        }
+        // 1. Bottom row comes from the shared spec, so it lands in the same
+        // place the symbol picker puts it.
+        val bottomContainerTop = bottomBar.layOut(
+            keys = keysInfo,
+            widthPx = width,
+            heightPx = height,
+            density = density,
+            rowCount = BottomBarSpec.ROW_COUNT,
+            verticalSpacingPx = verticalSpacing
+        )
 
         // 2. Calculate emoji area bounds
-        emojiAreaLeft = 4f * density
-        emojiAreaRight = width - 4f * density
+        emojiAreaLeft = KeyGeometry.panelPaddingPx(density)
+        emojiAreaRight = width - KeyGeometry.panelPaddingPx(density)
         emojiAreaTop = 6f * density
         emojiAreaBottom = bottomContainerTop - 6f * density
         emojiAreaWidth = emojiAreaRight - emojiAreaLeft
         emojiAreaHeight = emojiAreaBottom - emojiAreaTop
 
-        colW = emojiAreaWidth / 7f
-        val numRows = (emojisList.size + 6) / 7
+        colW = emojiAreaWidth / EMOJI_COLS
+        val numRows = (emojisList.size + EMOJI_COLS - 1) / EMOJI_COLS
         totalContentHeight = numRows * colW
 
         clampScrollOffset()
@@ -143,7 +208,57 @@ class TraditionalEmojiView @JvmOverloads constructor(
 
     private fun clampScrollOffset() {
         val maxScroll = max(0f, totalContentHeight - emojiAreaHeight)
+        val before = scrollOffset
         scrollOffset = scrollOffset.coerceIn(0f, maxScroll)
+        // The cells moved, so the nodes describing them are out of date: a
+        // screen reader would send its finger to where an emoji used to be.
+        if (before != scrollOffset) accessibility.invalidateRoot()
+    }
+
+    /**
+     * Which control-row key a touch is on, or -1.
+     *
+     * Goes through the shared hit-test so the target is 48dp even though the
+     * drawn key is narrower, and so a press and its release are judged the same
+     * way — a touch that lands in the grown area has to stay valid until the
+     * finger lifts, or the key never fires.
+     */
+    internal fun findBottomKeyIndexAt(x: Float, y: Float): Int {
+        if (keysInfo.isEmpty()) return -1
+        val key = findKeyAt(keysInfo, x, y, KeyGeometry.minTouchPx(density)) ?: return -1
+        return keysInfo.indexOf(key)
+    }
+
+    /**
+     * Which emoji a touch is on, or -1.
+     *
+     * A cell is [colW] square — 50.3dp on a 360dp panel, already past the
+     * target — and narrower than that on a split keyboard, so the same grown
+     * target rule as the keys applies. The area's own bounds stay exact, so a
+     * touch in the padding or on the control row is not an emoji.
+     */
+    internal fun findEmojiIndexAt(x: Float, y: Float): Int {
+        if (emojisList.isEmpty() || colW <= 0f) return -1
+        if (y < emojiAreaTop || y > emojiAreaBottom) return -1
+        val minTouch = KeyGeometry.minTouchPx(density)
+        val rowCount = (emojisList.size + EMOJI_COLS - 1) / EMOJI_COLS
+        val col = KeyGeometry.nearestCellIndex(
+            position = x - emojiAreaLeft,
+            origin = 0f,
+            cellSize = colW,
+            cellCount = EMOJI_COLS,
+            minTouchPx = minTouch
+        )
+        val row = KeyGeometry.nearestCellIndex(
+            position = y - emojiAreaTop + scrollOffset,
+            origin = 0f,
+            cellSize = colW,
+            cellCount = rowCount,
+            minTouchPx = minTouch
+        )
+        if (col < 0 || row < 0) return -1
+        val index = row * EMOJI_COLS + col
+        return if (index in emojisList.indices) index else -1
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -154,6 +269,7 @@ class TraditionalEmojiView @JvmOverloads constructor(
     override fun computeScroll() {
         if (scroller.computeScrollOffset()) {
             scrollOffset = scroller.currY.toFloat()
+            accessibility.invalidateRoot()
             clampScrollOffset()
             postInvalidateOnAnimation()
         }
@@ -172,45 +288,36 @@ class TraditionalEmojiView @JvmOverloads constructor(
         textPaint.textAlign = Paint.Align.CENTER
         textPaint.typeface = Typeface.DEFAULT
 
-        val viewportTop = scrollOffset
-        val viewportBottom = scrollOffset + emojiAreaHeight
-
-        val firstRow = max(0, (viewportTop / colW).toInt())
-        val lastRow = ((viewportBottom / colW).toInt() + 1).coerceAtMost((emojisList.size + 6) / 7)
-
-        for (row in firstRow until lastRow) {
+        for (index in visibleEmojiIndices()) {
+            val row = index / EMOJI_COLS
+            val col = index % EMOJI_COLS
             val cellTop = emojiAreaTop + row * colW
             val cellBottom = cellTop + colW
             val cellCenterY = (cellTop + cellBottom) / 2f
             val baseline = KeyboardUtils.centerBaselineY(cellCenterY, textPaint)
 
-            for (col in 0 until 7) {
-                val index = row * 7 + col
-                if (index < emojisList.size) {
-                    val emoji = emojisList[index]
-                    val cellLeft = emojiAreaLeft + col * colW
-                    val cellRight = cellLeft + colW
-                    val cellCenterX = (cellLeft + cellRight) / 2f
+            val emoji = emojisList[index]
+            val cellLeft = emojiAreaLeft + col * colW
+            val cellRight = cellLeft + colW
+            val cellCenterX = (cellLeft + cellRight) / 2f
 
-                    if (pressedEmojiIndex == index) {
-                        pressedEmojiRect.set(
-                            cellLeft + 2f * density,
-                            cellTop + 2f * density,
-                            cellRight - 2f * density,
-                            cellBottom - 2f * density
-                        )
-                        KeyRenderer.drawFlatRoundedRect(
-                            canvas = canvas,
-                            rect = pressedEmojiRect,
-                            cornerRadius = 6f * density,
-                            color = keyPressedBgColor,
-                            style = Paint.Style.FILL
-                        )
-                    }
-
-                    canvas.drawText(emoji, cellCenterX, baseline, textPaint)
-                }
+            if (pressedEmojiIndex == index) {
+                pressedEmojiRect.set(
+                    cellLeft + 2f * density,
+                    cellTop + 2f * density,
+                    cellRight - 2f * density,
+                    cellBottom - 2f * density
+                )
+                KeyRenderer.drawFlatRoundedRect(
+                    canvas = canvas,
+                    rect = pressedEmojiRect,
+                    cornerRadius = 6f * density,
+                    color = keyPressedBgColor,
+                    style = Paint.Style.FILL
+                )
             }
+
+            canvas.drawText(emoji, cellCenterX, baseline, textPaint)
         }
         canvas.restore()
 
@@ -280,28 +387,12 @@ class TraditionalEmojiView @JvmOverloads constructor(
                 isDragging = false
 
                 if (y >= emojiAreaBottom) {
-                    pressedBottomKeyIndex = -1
+                    pressedBottomKeyIndex = findBottomKeyIndexAt(x, y)
                     pressedEmojiIndex = -1
-                    for (i in keysInfo.indices) {
-                        if (keysInfo[i].rect.contains(x, y)) {
-                            pressedBottomKeyIndex = i
-                            break
-                        }
-                    }
                     invalidate()
                 } else {
                     pressedBottomKeyIndex = -1
-                    pressedEmojiIndex = -1
-                    val relativeY = y - emojiAreaTop + scrollOffset
-                    val relativeX = x - emojiAreaLeft
-                    if (relativeX in 0f..emojiAreaWidth && relativeY >= 0f) {
-                        val col = (relativeX / colW).toInt().coerceIn(0, 6)
-                        val row = (relativeY / colW).toInt()
-                        val emojiIndex = row * 7 + col
-                        if (emojiIndex in emojisList.indices) {
-                            pressedEmojiIndex = emojiIndex
-                        }
-                    }
+                    pressedEmojiIndex = findEmojiIndexAt(x, y)
                     invalidate()
                 }
             }
@@ -326,24 +417,13 @@ class TraditionalEmojiView @JvmOverloads constructor(
                     invalidate()
                 } else {
                     if (pressedBottomKeyIndex != -1) {
-                        if (!keysInfo[pressedBottomKeyIndex].rect.contains(x, y)) {
+                        if (findBottomKeyIndexAt(x, y) != pressedBottomKeyIndex) {
                             pressedBottomKeyIndex = -1
                             invalidate()
                         }
                     }
                     if (pressedEmojiIndex != -1) {
-                        val relativeY = y - emojiAreaTop + scrollOffset
-                        val relativeX = x - emojiAreaLeft
-                        var stillInCell = false
-                        if (relativeX in 0f..emojiAreaWidth && relativeY >= 0f) {
-                            val col = (relativeX / colW).toInt().coerceIn(0, 6)
-                            val row = (relativeY / colW).toInt()
-                            val emojiIndex = row * 7 + col
-                            if (emojiIndex == pressedEmojiIndex) {
-                                stillInCell = true
-                            }
-                        }
-                        if (!stillInCell) {
+                        if (findEmojiIndexAt(x, y) != pressedEmojiIndex) {
                             pressedEmojiIndex = -1
                             invalidate()
                         }
@@ -354,7 +434,7 @@ class TraditionalEmojiView @JvmOverloads constructor(
             MotionEvent.ACTION_UP -> {
                 if (!isDragging) {
                     if (pressedBottomKeyIndex != -1) {
-                        if (keysInfo[pressedBottomKeyIndex].rect.contains(x, y)) {
+                        if (findBottomKeyIndexAt(x, y) == pressedBottomKeyIndex) {
                             val code = keysInfo[pressedBottomKeyIndex].code
                             when (code) {
                                 "ABC" -> onBackToLetters?.invoke()
@@ -366,15 +446,9 @@ class TraditionalEmojiView @JvmOverloads constructor(
                             }
                         }
                     } else if (pressedEmojiIndex != -1) {
-                        val relativeY = y - emojiAreaTop + scrollOffset
-                        val relativeX = x - emojiAreaLeft
-                        if (relativeX in 0f..emojiAreaWidth && relativeY >= 0f) {
-                            val col = (relativeX / colW).toInt().coerceIn(0, 6)
-                            val row = (relativeY / colW).toInt()
-                            val emojiIndex = row * 7 + col
-                            if (emojiIndex == pressedEmojiIndex && emojiIndex in emojisList.indices) {
-                                onSelectEmoji?.invoke(emojisList[emojiIndex])
-                            }
+                        val emojiIndex = findEmojiIndexAt(x, y)
+                        if (emojiIndex == pressedEmojiIndex && emojiIndex in emojisList.indices) {
+                            onSelectEmoji?.invoke(emojisList[emojiIndex])
                         }
                     }
                 } else {
@@ -410,5 +484,10 @@ class TraditionalEmojiView @JvmOverloads constructor(
             }
         }
         return true
+    }
+
+    private companion object {
+        /** Emoji per row. Was a literal 7 in four places, once per arithmetic. */
+        const val EMOJI_COLS = 7
     }
 }

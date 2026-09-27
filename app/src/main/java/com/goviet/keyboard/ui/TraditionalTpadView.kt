@@ -2,11 +2,14 @@ package com.goviet.keyboard.ui
 
 import android.content.Context
 import android.graphics.Canvas
+import android.graphics.RectF
 import android.os.Handler
 import android.os.Looper
 import android.util.AttributeSet
 import android.view.MotionEvent
+import com.goviet.R
 import com.goviet.core.density
+import com.goviet.keyboard.EditorFieldIntent
 
 class TraditionalTpadView @JvmOverloads constructor(
     context: Context,
@@ -84,8 +87,52 @@ class TraditionalTpadView @JvmOverloads constructor(
         }
     }
 
+    /**
+     * The keys as nodes for a screen reader, which otherwise sees one empty
+     * rectangle for the whole pad and cannot reach a single digit.
+     */
+    private val accessibility = KeyGridTouchHelper(this) { accessibilityCells() }
+
     init {
         setupKeys()
+        accessibility.attach()
+    }
+
+    /**
+     * The pad's keys, in the order they are drawn, each with the label it
+     * shows and the action it does.
+     *
+     * The description is what the key says, read out: a digit says its letters
+     * too, because "2 abc" is the key, and the backspace says what it is
+     * rather than what it is drawn as — a screen reader reading out a
+     * backwards arrow says "backspace" in some voices and nothing at all in
+     * others.
+     */
+    internal fun accessibilityCells(): List<KeyGridCell> {
+        if (width <= 0 || height <= 0) return emptyList()
+        return keysList.map { key ->
+            KeyGridCell(
+                bounds = RectF(key.visualRect),
+                description = KeyboardUtils.keyNodeDescription(context, key, currentImeOptions, currentInputType),
+                // The same call a touch makes, so a node and a finger cannot
+                // drift apart: ABC switches panels, everything else types.
+                onActivate = { handleKeyClick(key) }
+            )
+        }
+    }
+
+    /**
+     * Forwards a screen reader's hover to the keys.
+     *
+     * Without this the pad is one node to a screen reader and the keys are
+     * something it has to guess the position of by touch.
+     */
+    override fun dispatchHoverEvent(event: MotionEvent): Boolean =
+        accessibility.dispatchHoverEvent(event) || super.dispatchHoverEvent(event)
+
+    override fun performClick(): Boolean {
+        super.performClick()
+        return true
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -93,43 +140,69 @@ class TraditionalTpadView @JvmOverloads constructor(
         calculateLayout()
     }
 
+    /**
+     * Places the four rows from [KeyGeometry], the way every other panel places
+     * its keys, instead of dividing the panel by hand.
+     *
+     * The hand arithmetic is what had the T-pad's bottom row somewhere else:
+     * 4dp of padding top and bottom and keys drawn 4dp inside a cell that
+     * spanned the gap, so the last row ended 4dp higher than every other
+     * panel's bottom row and its keys were 8dp apart rather than sharing the
+     * row spacing. Same padding, same row height, same gap, same bottom edge
+     * as the letter and emoji panels now; the keys are drawn at their cell, so
+     * what is drawn is what the touch target already was.
+     */
     private fun calculateLayout() {
         if (width <= 0 || height <= 0 || keysList.isEmpty()) return
 
-        val paddingLeft = 4f * density
-        val paddingRight = 4f * density
-        val paddingTop = 4f * density
-        val paddingBottom = 4f * density
+        val padding = KeyGeometry.panelPaddingPx(density)
+        val spacing = KeyGeometry.rowSpacingPx(density)
+        val rowCount = keysList.size / COLUMN_COUNT
+        if (rowCount <= 0) return
 
-        val usableWidth = width - paddingLeft - paddingRight
-        val usableHeight = height - paddingTop - paddingBottom
-
-        val colW = usableWidth / 4f
-        val rowH = usableHeight / 4f
+        val rowHeight = KeyGeometry.standardRowHeight(
+            totalHeightPx = height.toFloat(),
+            density = density,
+            rowCount = rowCount,
+            verticalSpacingPx = spacing
+        )
+        val cellWidth =
+            (width - 2f * padding - spacing * (COLUMN_COUNT - 1)) / COLUMN_COUNT
+        val firstRowTop = KeyGeometry.ROW_PADDING_TOP_DP * density
 
         for (index in keysList.indices) {
             val key = keysList[index]
-            val row = index / 4
-            val col = index % 4
+            val row = index / COLUMN_COUNT
+            val col = index % COLUMN_COUNT
 
-            val cellLeft = paddingLeft + col * colW
-            val cellRight = cellLeft + colW
-            val cellTop = paddingTop + row * rowH
-            val cellBottom = cellTop + rowH
+            val cellLeft = padding + col * (cellWidth + spacing)
+            val cellTop = firstRowTop + row * (rowHeight + spacing)
 
-            val marginX = 2f * density
-            val marginY = 4f * density
-
-            val keyLeft = cellLeft + marginX
-            val keyRight = cellRight - marginX
-            val keyTop = cellTop + marginY
-            val keyBottom = cellBottom - marginY
-
-            key.rect.set(cellLeft, cellTop, cellRight, cellBottom)
-            key.visualRect.set(keyLeft, keyTop, keyRight, keyBottom)
+            key.rect.set(cellLeft, cellTop, cellLeft + cellWidth, cellTop + rowHeight)
+            key.visualRect.set(key.rect)
             key.applyShadow(density)
         }
+        // The keys are in new places, and a node that still describes the old
+        // rectangle is a node a screen reader will send a finger to the wrong
+        // key from.
+        accessibility.invalidateRoot()
     }
+
+    /**
+     * Whether a drag along BACKSPACE may delete a whole word.
+     *
+     * No, in a field that is asking for numbers or calling itself a one-time
+     * code. The swipe is a text gesture: dragging it across a card number, a
+     * phone number or a code takes the whole number away, which is not what
+     * dragging a finger over a number was ever going to mean to the person
+     * doing it. The T-pad is still reachable from the letter keyboard by hand,
+     * which is where the gesture stays available.
+     */
+    internal val allowsWordDelete: Boolean
+        get() = !isOtpField && !EditorFieldIntent.isNumericInput(currentEditorInputType)
+
+    /** The keys as they are currently laid out, for the geometry test. */
+    internal fun laidOutKeys(): List<Key> = keysList
 
     private fun setupKeys() {
         keysList.clear()
@@ -143,7 +216,18 @@ class TraditionalTpadView @JvmOverloads constructor(
         val isDecimal = (currentEditorInputType and 0x00002000) != 0
 
         // Row 1
-        keysList.add(Key(code = "1", label = "1"))
+        // 1 is the one digit that types nothing but itself, so long press is
+        // the only way to anything else on it. Six, because the long-press popup
+        // is 44dp per option and stops fitting a 360dp phone at eight; these
+        // are the six no other key on the pad carries ("-", "+", "*", "#" and
+        // "." are long presses of their own keys).
+        keysList.add(
+            Key(
+                code = "1",
+                label = "1",
+                longPressOptions = listOf("=", "\"", "%", "&", "@", "_")
+            )
+        )
         keysList.add(Key(code = "2", label = "2"))
         keysList.add(Key(code = "3", label = "3"))
         keysList.add(Key(code = "BACKSPACE", label = "⌫", isFunctional = true))
@@ -184,7 +268,7 @@ class TraditionalTpadView @JvmOverloads constructor(
         }
 
         if (isOtpField) {
-            keysList.add(Key(code = "PASTE_OTP", label = "Paste", isFunctional = true))
+            keysList.add(Key(code = "PASTE_OTP", label = context.getString(R.string.tpad_paste), isFunctional = true))
         } else if (isPhone) {
             keysList.add(Key(code = "-", label = "-"))
         } else if (isDatetime) {
@@ -192,7 +276,7 @@ class TraditionalTpadView @JvmOverloads constructor(
         } else if (isNumber && isDecimal) {
             keysList.add(Key(code = ".", label = "."))
         } else {
-            keysList.add(Key(code = "SPACE", label = "Space"))
+            keysList.add(Key(code = "SPACE", label = context.getString(R.string.key_space)))
         }
 
         val enterLabel = KeyboardUtils.getEnterTextLabel(currentImeOptions, currentInputType)
@@ -212,7 +296,8 @@ class TraditionalTpadView @JvmOverloads constructor(
     }
 
 
-    private fun findKeyByCoordinates(x: Float, y: Float): Key? = findKeyAt(keysList, x, y)
+    private fun findKeyByCoordinates(x: Float, y: Float): Key? =
+        findKeyAt(keysList, x, y, KeyGeometry.minTouchPx(density))
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
@@ -228,8 +313,13 @@ class TraditionalTpadView @JvmOverloads constructor(
             )
             drawKeyBackgroundScaled(canvas, key, cornerRadius = 8f * density)
 
-            // Draw label
-            KeyboardUtils.drawKeyLabel(canvas, key.label, drawRect, textPaint, textColor, density, key.isFunctional)
+            // Draw label. The space key is the one key that shows a picture of
+            // itself: the word on it is for a screen reader, not for the eye.
+            if (key.code == "SPACE") {
+                KeyboardUtils.drawSpaceBar(canvas, drawRect, textPaint, subTextColor, density)
+            } else {
+                KeyboardUtils.drawKeyLabel(canvas, key.label, drawRect, textPaint, textColor, density, key.isFunctional)
+            }
 
             val tpadSec = key.secondaryLabel
             if (tpadSec != null) {
@@ -299,7 +389,11 @@ class TraditionalTpadView @JvmOverloads constructor(
                             if (backspaceSwipe.shouldStopRepeat(x, density)) {
                                 backspaceRepeatHandler.stop()
                             }
-                            repeat(backspaceSwipe.advanceWords(x, density)) {
+                            // Repeat still runs; only the word-sized jump is
+                            // withheld, and only in a field that asked for
+                            // digits (see allowsWordDelete).
+                            val words = if (allowsWordDelete) backspaceSwipe.advanceWords(x, density) else 0
+                            repeat(words) {
                                 onKey?.invoke("DELETE_WORD")
                             }
                         }
@@ -351,5 +445,10 @@ class TraditionalTpadView @JvmOverloads constructor(
         super.onDetachedFromWindow()
         backspaceRepeatHandler.stop()
         longPressHandler.removeCallbacksAndMessages(null)
+    }
+
+    private companion object {
+        /** The pad is four keys wide, and four rows deep. */
+        const val COLUMN_COUNT = 4
     }
 }

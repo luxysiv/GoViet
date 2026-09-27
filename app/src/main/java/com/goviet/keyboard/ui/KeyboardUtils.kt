@@ -1,11 +1,13 @@
 package com.goviet.keyboard.ui
 
+import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.view.inputmethod.EditorInfo
 import android.text.InputType
+import com.goviet.R
 
 object KeyboardUtils {
     private fun isMultiLineOrNoEnterAction(imeOptions: Int, inputType: Int): Boolean {
@@ -24,23 +26,14 @@ object KeyboardUtils {
     private val path = Path()
     private val rectF = RectF()
 
+    /** OPEN BOX, the character a space bar is written as. */
+    private const val SPACE_BAR_GLYPH = "␣"
+
     // Secondary-label width cache: the label set is tiny and fixed per
     // density, so measureText runs once per label instead of every frame.
     // (Measured with the caller's paint *after* it sets 9dp, hence valid.)
     private var secCacheDensity = 0f
     private val secWidthCache = HashMap<String, Float>()
-
-    fun calculateStandardRowHeight(
-        totalHeight: Float,
-        density: Float,
-        rowCount: Int = 4,
-        verticalSpacing: Float = 11.5f * density
-    ): Float {
-        val paddingTop = 6f * density
-        val paddingBottom = 4f * density
-        val usableHeight = totalHeight - paddingTop - paddingBottom - (verticalSpacing * (rowCount - 1))
-        return usableHeight / rowCount
-    }
 
     fun getEnterTextLabel(imeOptions: Int, inputType: Int): String {
         return enterActionLabel(imeOptions, inputType, "Enter", "Go", "Search", "Send", "Next", "Done")
@@ -244,6 +237,51 @@ object KeyboardUtils {
         val secCenterX = secX - secWidth / 2f
         val secY = centerBaselineY(drawRect.top + 9f * density, textPaint)
         canvas.drawText(label, secCenterX, secY, textPaint)
+    }
+
+    /**
+     * The space key, drawn as the glyph a space bar is written as.
+     *
+     * The key is a wide, short bar already, and the word printed across it took
+     * the middle of the key to say what the shape of the key says. A screen
+     * reader is handed the word by [keyNodeDescription] instead, which is where
+     * a label belongs once it is for hearing and not for looking.
+     */
+    fun drawSpaceBar(canvas: Canvas, drawRect: RectF, textPaint: Paint, color: Int, density: Float) {
+        textPaint.color = color
+        textPaint.textSize = 20f * density
+        canvas.drawText(
+            SPACE_BAR_GLYPH,
+            drawRect.centerX(),
+            centerBaselineY(drawRect, textPaint),
+            textPaint
+        )
+    }
+
+    /**
+     * What a screen reader should say for [key].
+     *
+     * The label the key carries, with the keys whose label is not what is drawn
+     * on them handled: the space key is drawn as a bar, the backspace as an
+     * arrow, and the enter of the symbol and emoji panels as "⏎". A node that
+     * took those as they stand is a node a screen reader walks into and reads
+     * nothing out of, and "backspace" is the one key on a numeric pad worth
+     * reading out loud.
+     */
+    fun keyNodeDescription(
+        context: Context,
+        key: Key,
+        imeOptions: Int = 0,
+        inputType: Int = 0
+    ): CharSequence = when {
+        key.code == "SPACE" && key.label.isBlank() -> context.getString(R.string.key_space)
+        key.code == "BACKSPACE" -> context.getString(R.string.tpad_backspace)
+        // The emoji and symbol panels draw enter as an arrow and name it "⏎"
+        // before they know what the field asked for; the pad names it properly
+        // already. Either way a node that reads out the arrow is a node that
+        // reads out nothing.
+        key.code == "ENTER" -> getEnterTextLabel(imeOptions, inputType)
+        else -> key.label
     }
 
     /**

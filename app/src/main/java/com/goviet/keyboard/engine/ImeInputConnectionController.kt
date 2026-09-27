@@ -663,8 +663,14 @@ class ImeInputConnectionController(
                         val otpRegex = "\\d{4,8}".toRegex()
                         val match = otpRegex.find(text)
                         val otp = match?.value ?: text.filter { it.isDigit() }.take(6)
+                        // Through insertLiteral, not ic.commitText: this is the
+                        // one key that pasted outside the keyboard's own
+                        // transaction, so whatever composing region the field
+                        // had stayed behind and the IME was left describing a
+                        // preedit it no longer owned.
+                        insertLiteral(otp)
                         if (otp.isNotEmpty()) {
-                            ic.commitText(otp, 1)
+                            service.notifySentenceStateAfterKey("PASTE_OTP")
                         }
                     }
                 }
@@ -924,5 +930,27 @@ class ImeInputConnectionController(
         }
     }
 
-    fun commitAndFinishing(wordBreak: String = "") = commitAndReset(wordBreak)
+    /**
+     * Inserts text that is not part of the Vietnamese buffer: an emoji, or a
+     * run pasted from elsewhere.
+     *
+     * The composing range is settled first, through the same rule a letter
+     * takes, so the editor is never handed a mutation the tracked state does
+     * not describe. That is the whole point of the order here: the panel that
+     * owns the key used to wrap this in its own batch and call commitText on a
+     * cursor it had not closed, which left the range we track pointing into
+     * the middle of what we had just written.
+     */
+    fun insertLiteral(text: String) {
+        if (text.isEmpty()) return
+        val ic = service.currentInputConnection ?: return
+        lastExpandedMacro = null
+        ic.beginBatchEdit()
+        try {
+            commitAndReset(alreadyBatched = true)
+            ic.commitText(text, 1)
+        } finally {
+            ic.endBatchEdit()
+        }
+    }
 }

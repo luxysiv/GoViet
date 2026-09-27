@@ -8,6 +8,7 @@ import com.goviet.keyboard.clipboard.ClipboardDatabase
 import com.goviet.keyboard.clipboard.ClipboardRepository
 import com.goviet.keyboard.clipboard.ClipboardEntity
 import com.goviet.keyboard.ui.KeyboardUIManager
+import com.goviet.keyboard.ui.PanelState
 import com.goviet.core.AppPreferences
 import android.util.Log
 import android.content.Intent
@@ -59,7 +60,7 @@ class VietnameseInputMethodService : InputMethodService(), LifecycleOwner, ViewM
     val _languageMode = MutableStateFlow("VIE") // "VIE" or "ENG"
     val shiftController = com.goviet.keyboard.engine.ShiftStateController()
     val _shiftState: StateFlow<Int> get() = shiftController.state
-    val _keyboardMode = MutableStateFlow("QWERTY") // "QWERTY", "TPAD", "SYMBOLS", "EMOJI", "CLIPBOARD"
+    val _panelState = MutableStateFlow<PanelState>(PanelState.Letters)
     val _clipboardItems = MutableStateFlow<List<ClipboardEntity>>(emptyList())
     val _navigationBarHeight = MutableStateFlow(0)
     val _recentEmojis = MutableStateFlow<List<String>>(emptyList())
@@ -197,25 +198,17 @@ class VietnameseInputMethodService : InputMethodService(), LifecycleOwner, ViewM
         
         inputProcessor.clearState()
 
-        // Auto-switch to TPAD mode if input is numeric, password/number, or hints OTP/verification code
-        val classType = inputType and EditorInfo.TYPE_MASK_CLASS
-        val isNumeric = (classType == EditorInfo.TYPE_CLASS_NUMBER) || 
-                        (classType == EditorInfo.TYPE_CLASS_PHONE) ||
-                        (classType == EditorInfo.TYPE_CLASS_DATETIME)
-        
-        val hintLower = info?.hintText?.toString()?.lowercase() ?: ""
-        val isOTPHint = hintLower.contains("otp") || hintLower.contains("code") || hintLower.contains("pin") || hintLower.contains("mã") || hintLower.contains("verify")
-        
-        val fieldNameLower = info?.fieldName?.lowercase() ?: ""
-        val isOTPFieldId = fieldNameLower.contains("otp") || fieldNameLower.contains("code") || fieldNameLower.contains("pin") || fieldNameLower.contains("mã") || fieldNameLower.contains("verify")
+        // Auto-switch to TPAD mode if input is numeric, or the field names
+        // itself a one-time code. Both answers used to be worked out twice, in
+        // here and in the root view, and they could disagree about one field.
+        val isNumeric = EditorFieldIntent.isNumericInput(inputType)
+        val isOneTimeCode = EditorFieldIntent.isOneTimeCode(info?.hintText, info?.fieldName) ||
+            EditorFieldIntent.isNumericPassword(inputType)
 
-        val isNumericPassword = (inputType and EditorInfo.TYPE_MASK_CLASS) == EditorInfo.TYPE_CLASS_NUMBER &&
-                (inputType and EditorInfo.TYPE_MASK_VARIATION) == EditorInfo.TYPE_NUMBER_VARIATION_PASSWORD
-
-        if (isNumeric || isOTPHint || isOTPFieldId || isNumericPassword) {
-            _keyboardMode.value = "TPAD"
+        if (isNumeric || isOneTimeCode) {
+            _panelState.value = PanelState.Tpad
         } else {
-            _keyboardMode.value = "QWERTY"
+            _panelState.value = PanelState.Letters
         }
 
         evaluateAutoShift()
@@ -386,7 +379,7 @@ class VietnameseInputMethodService : InputMethodService(), LifecycleOwner, ViewM
         super.onFinishInputView(finishingInput)
         
         inputProcessor.clearState()
-        _keyboardMode.value = "QWERTY"
+        _panelState.value = PanelState.Letters
         keyboardRootView?.handleSettingsReset()
     }
 
@@ -418,6 +411,10 @@ class VietnameseInputMethodService : InputMethodService(), LifecycleOwner, ViewM
     // Direct delegation APIs matching UI expectations perfectly
     fun handleKeyPress(key: String) {
         inputProcessor.handleKeyPress(key)
+    }
+
+    fun insertLiteral(text: String) {
+        inputProcessor.insertLiteral(text)
     }
 
     fun handleEditAction(action: String) {

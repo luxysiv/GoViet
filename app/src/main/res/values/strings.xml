@@ -118,4 +118,11 @@
     <string name="macro_expansion_preview">➔ %1$s</string>
     <string name="debug_screen_placeholder">Screen: %1$s (Place Holder)</string>
 
+    <!-- T-pad keys. Labels drawn on keys were hardcoded English, so a keyboard
+         set to Vietnamese still read "Space" and "Paste" on the numeric pad. -->
+    <string name="key_space">Cách khoảng</string>
+    <string name="tpad_paste">Dán</string>
+    <!-- Read out by a screen reader, which is given the backspace key as a
+         word because it is given the key as an arrow glyph. -->
+    <string name="tpad_backspace">Xóa</string>
 </resources>

@@ -13,11 +13,15 @@ class StandardLetterGridView @JvmOverloads constructor(
     defStyleAttr: Int = 0
 ) : BaseKeyGridView(context, attrs, defStyleAttr) {
 
-    var keyboardMode: String = "QWERTY"
+    /**
+     * Which page of this grid is showing. Derived from [PanelState] by the
+     * root view: the "123" key opens [LetterPage.SYMBOLS_1], and the switch key
+     * on a symbol page walks to [LetterPage.SYMBOLS_2] and back.
+     */
+    var page: LetterPage = LetterPage.LETTERS
         set(value) {
             if (field != value) {
                 field = value
-                internalKeyboardMode = if (value == "SYMBOLS") "SYM1" else "ABC"
                 rebuildKeys()
                 recalcCoordinates()
             }
@@ -81,8 +85,6 @@ class StandardLetterGridView @JvmOverloads constructor(
     var onKey: ((String) -> Unit)? = null
     var onSwitchToSymbols: (() -> Unit)? = null
 
-    private var internalKeyboardMode: String = "ABC"
-
     private val keys = mutableListOf<Key>()
     private var rows: List<List<Key>> = emptyList()
 
@@ -113,14 +115,17 @@ class StandardLetterGridView @JvmOverloads constructor(
         rebuildKeys()
     }
 
+    /** The keys as they are currently laid out, for the touch target test. */
+    internal fun laidOutKeys(): List<Key> = keys
+
     private fun rebuildKeys() {
         val isSplit = isLandscape && (landscapeMode == AppPreferences.LANDSCAPE_SPLIT)
         val (newKeys, _) = KeyboardLayout.buildKeyRows(
-            internalKeyboardMode, shiftState, languageMode, imeOptions, inputType, isSplit
+            page, shiftState, languageMode, imeOptions, inputType, isSplit
         )
         keys.clear()
         keys.addAll(newKeys)
-        rows = KeyboardLayout.getRows(keys, internalKeyboardMode)
+        rows = KeyboardLayout.getRows(keys, page)
     }
 
     private fun recalcCoordinates() {
@@ -131,9 +136,9 @@ class StandardLetterGridView @JvmOverloads constructor(
     }
 
     private fun switchPage() {
-        internalKeyboardMode = if (internalKeyboardMode == "SYM1") "SYM2" else "SYM1"
-        rebuildKeys()
-        recalcCoordinates()
+        // The page setter rebuilds the rows and recalculates; doing it here too
+        // would lay the whole keyboard out twice per tap.
+        page = page.other()
     }
 
     // ── Layout ──────────────────────────────────────────────────────────────
@@ -290,7 +295,7 @@ class StandardLetterGridView @JvmOverloads constructor(
             val topOfRow = currentY
             val bottomOfRow = topOfRow + unitRowHeight
 
-            if (internalKeyboardMode == "ABC" && rowIndex == 2) {
+            if (page == LetterPage.LETTERS && rowIndex == 2) {
                 val r2WidthAvailable = usableWidth - (horizontalSpacing * 10)
                 val r2UnitWidth = r2WidthAvailable / 9.64f
                 val r2SideMargin = 0.32f * r2UnitWidth

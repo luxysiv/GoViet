@@ -305,8 +305,11 @@ class TraditionalEditPadView @JvmOverloads constructor(
 
             MotionEvent.ACTION_MOVE -> {
                 activeTouchedKey?.let { key ->
-                    // If dragged outside the target keys, cancel press
-                    if (!key.rect.contains(x, y)) {
+                    // If dragged outside the key's target, cancel press. The
+                    // target, not the drawn rect: the press was allowed to start
+                    // in the grown area, so it has to survive being dragged
+                    // around inside it.
+                    if (!key.isWithinTarget(x, y, KeyGeometry.minTouchPx(density))) {
                         key.isPressed = false
                         activeTouchedKey = null
                         holdingCode = null
@@ -335,7 +338,8 @@ class TraditionalEditPadView @JvmOverloads constructor(
         keyRepeatHandler.stop()
     }
 
-    private fun findKeyByCoordinates(x: Float, y: Float): Key? = findKeyAt(allKeys, x, y)
+    private fun findKeyByCoordinates(x: Float, y: Float): Key? =
+        findKeyAt(allKeys, x, y, KeyGeometry.minTouchPx(density))
 
     private val padding get() = 4f * density
 }

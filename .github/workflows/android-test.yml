@@ -1,0 +1,111 @@
+name: Android CI (test branch)
+
+# Verification only. The main workflow builds and publishes the `latest` GitHub
+# Release, and it only runs for pushes to main — so a branch pushed there would
+# do nothing at all. This one exists so a feature branch can be checked by CI
+# without touching that release: unit tests, a debug build and the APK as an
+# artifact, no release, no tag.
+on:
+  push:
+    branches: ['test/**']
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: Build & Compile Android App
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Set up JDK 21
+      uses: actions/setup-java@v4
+      with:
+        java-version: '21'
+        distribution: 'temurin'
+        cache: gradle
+
+    # android-actions/setup-android defaults to installing the legacy "tools"
+    # package, which Google removed from the SDK repository (sdkmanager exits 1
+    # with "Failed to find package 'tools'"). Pin @v4, skip extra packages
+    # (the runner already ships platform-tools), and reuse the preinstalled
+    # cmdline-tools 12.0 instead of downloading 20.0.
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v4
+      with:
+        cmdline-tools-version: 11076708   # 12.0 — matches the runner's preinstalled tools
+        packages: ''
+        accept-android-sdk-licenses: true
+
+    - name: Install NDK
+      run: |
+        sdkmanager --install "ndk;28.2.13676358" --channel=0
+
+    # The same step, and the same order of preference, as the main workflow:
+    # app/build.gradle.kts signs every variant with a keystore at the repo root
+    # (rootDir/debug.keystore unless KEYSTORE_PATH says otherwise), so a build
+    # cannot reach compilation without one. Decoding the same secret main uses
+    # is what makes this branch's APK installable over a build from main
+    # instead of asking to be uninstalled first.
+    #
+    # Generated rather than taken from a secret when there is no secret, so the
+    # workflow still runs on a fork.
+    - name: Decode or Generate Debug Keystore
+      env:
+        DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
+      run: |
+        if [ -n "$DEBUG_KEYSTORE_BASE64" ]; then
+          echo "Decoding debug keystore from GitHub Actions Secret DEBUG_KEYSTORE_BASE64..."
+          echo "$DEBUG_KEYSTORE_BASE64" | base64 -d > debug.keystore
+        elif [ -f "debug.keystore.base64" ]; then
+          echo "Decoding debug.keystore.base64 file..."
+          base64 -d debug.keystore.base64 > debug.keystore
+        elif [ -f "debug.keystore" ]; then
+          echo "debug.keystore already exists."
+        else
+          echo "debug.keystore not found. Generating a new debug keystore..."
+          keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+        fi
+
+    - name: Grant execute permission for gradlew
+      run: chmod +x gradlew
+
+    - name: Run Unit Tests
+      run: |
+        ./gradlew testDebugUnitTest --stacktrace
+
+    # Built and thrown away: this variant is here to say the branch compiles
+    # without R8 in the way, which is a faster and clearer failure than the
+    # same error from a minified build. Nobody installs it, so nothing uploads
+    # it — an artifact nobody downloads still costs storage.
+    - name: Build Debug APK
+      run: |
+        ./gradlew assembleDebug -Pandroid.builder.sdkDownload=true --stacktrace
+
+    # The release build, which is the one that is actually installed and
+    # actually shipped: R8 shrinks, strips and rewrites, and only this can tell
+    # us whether a branch is shippable. Same build, same keystore as the main
+    # workflow, so a branch that cannot be minified fails on this run instead
+    # of on a push to main.
+    - name: Build Release APK
+      run: |
+        ./gradlew assembleRelease -Pandroid.builder.sdkDownload=true --stacktrace
+
+    # Testing the branch means installing the build under test, so the minified
+    # APK is the artifact. An artifact and not a release: nothing here outlives
+    # the run, and the "latest" release belongs to main.
+    #
+    # Error rather than warn when the file is missing, because a run that
+    # uploaded nothing looks exactly like a run that uploaded a working build.
+    - name: Upload release APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: GoViet-release-apk
+        path: app/build/outputs/apk/release/*.apk
+        if-no-files-found: error
+        retention-days: 14
+
