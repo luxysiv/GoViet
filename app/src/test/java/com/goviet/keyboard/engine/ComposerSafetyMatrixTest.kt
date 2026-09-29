@@ -208,11 +208,11 @@ class ComposerSafetyMatrixTest {
     fun backspaceForeignWord_locksLiteral() {
         engine.reset()
         type("deepseel")
-        assertEquals("dếpeel", engine.toDisplayString())
-        // Survivor "dếpee" cannot round-trip → literal lock, never re-Telexed.
-        assertEquals("dếpee", engine.backspace())
+        assertEquals("dépeel", engine.toDisplayString())
+        // Survivor "dépee" cannot round-trip → literal lock, never re-Telexed.
+        assertEquals("dépee", engine.backspace())
         assertFalse(engine.composeAsVietnamese)
-        assertEquals("dếpeek", engine.processKey('k').text.toString())
+        assertEquals("dépeek", engine.processKey('k').text.toString())
     }
 
     // ── 6. Emoji / ZWJ / flag: adoption fails, typing stays literal ────────

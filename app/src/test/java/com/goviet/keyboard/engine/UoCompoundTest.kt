@@ -136,6 +136,21 @@ class UoCompoundTest {
     }
 
     @Test
+    fun foldWAlt_isCaseInsensitive() {
+        // The 'w' alternative fold must be reachable from an uppercase W too:
+        // foldPrimaryAtSlot() lowercases internally, so gating the alt variant
+        // on the raw char left 'W' on the primary-only path and lost the
+        // uo/uô tie-break, giving "ƯƠ" where "uow" gives "uơ".
+        //
+        // The alt variant only decides the outcome when the coda is empty —
+        // pickWVariant() returns the primary outright once a coda is present —
+        // so these raws deliberately have none.
+        for (raw in listOf("uow", "uowr", "uows", "uowl", "thuow", "huow")) {
+            assertEquals(engine.process(raw).uppercase(), engine.process(raw.uppercase()))
+        }
+    }
+
+    @Test
     fun closingSemivowelsDeriveRawLikeConsonantCodas() {
         // Closing semivowels type literally like codas: ươn -> uwown,
         // ươi -> uwowi, ươu -> uwowu.

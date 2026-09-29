@@ -114,11 +114,20 @@ object RimeMap {
     private lateinit var _combineKeys: IntArray
     private lateinit var _combineVals: Array<String>
 
-    /** Parked alias display → its resolved nucleus (see [NucSpec.aliasOf]). */
-    private val aliasNuc = HashMap<Int, String>()
-
-    /** Parked alias display → the key the extension/tone math runs on. */
-    private val aliasEffKey = HashMap<Int, Int>()
+    /**
+     * A parked alias (see [NucSpec.aliasOf]) is a pair of rimes: the parked
+     * display the user has typed so far ("ưo") and the rime it is only
+     * provisionally committed to ("ươ").  Both are real rows of the flat map,
+     * which is what lets a parked alias be folded at all.
+     *
+     * The composer keeps the RESOLVED rime in its nucleus buffer and carries
+     * "parked" as a flag, so every key it packs matches the buffer it holds;
+     * these tables are the only place the parked spelling is needed — when
+     * folding (on the parked row) and when rendering.
+     */
+    private val aliasResolvedChars = HashMap<Int, CharArray>()  // parked key  → resolved chars
+    private val aliasParkedKey = HashMap<Int, Int>()            // resolved key → parked rime key
+    private val aliasParkedChars = HashMap<Int, CharArray>()    // resolved key → parked chars
 
     /** Initialize the flat map and syllable prefix table.  Called once at class load time. */
     init { build()
@@ -196,9 +205,11 @@ object RimeMap {
 
         for (spec in _nuclei) {
             val target = spec.aliasOf ?: continue
-            val key = rimeKey(spec.nucleus)
-            aliasNuc[key] = target
-            aliasEffKey[key] = rimeKey(target)
+            val parkedKey = rimeKey(spec.nucleus)
+            val resolvedKey = rimeKey(target)
+            aliasResolvedChars[parkedKey] = target.toCharArray()
+            aliasParkedKey[resolvedKey] = parkedKey
+            aliasParkedChars[resolvedKey] = spec.nucleus.toCharArray()
         }
 
         val allRimes = mutableListOf<String>()
@@ -487,32 +498,51 @@ object RimeMap {
     fun foldSlot(nucleusKey: Int): Int = table.find(nucleusKey)
 
     /**
-     * Resolved nucleus for a parked alias display (own key → aliasOf), or null.
-     * The caller preserves the display's casing on the resolved string.
+     * Resolve a parked alias display into its real rime, writing the result into
+     * [out] with no allocation.  True when [display] was a parked alias.
+     *
+     * [display] may be [out] itself: the case and the key are both read before
+     * the buffer is rewritten, so the in-place form is safe.  The case is
+     * carried over position by position, the way a fold carries it — a fold
+     * only re-cases the character it replaces, so the resolved rime must
+     * remember which of the alias' own characters were upper-case.  "ƯO" gives
+     * "ƯƠ", and the pivot-plus-lowercase-o form "Ưo" gives "Ươ" rather than the
+     * all-caps "ƯƠ" that upper-casing the whole nucleus would produce.
      */
     @JvmStatic
-    fun aliasDisplay(display: CharSequence): String? = aliasNuc[rimeKey(display)]
-
-    /**
-     * Rime key the extension/tone math must run on for [display]: the resolved
-     * alias key for a parked alias, otherwise [candidateKey] as-is.
-     */
-    @JvmStatic
-    fun effectiveNucleusKey(candidateKey: Int, display: CharSequence): Int =
-        aliasEffKey[rimeKey(display)] ?: candidateKey
-
-    /**
-     * Fold-data slot: a parked alias folds on its own key ("ưo" w→ơ → "ươ"),
-     * while its extension math runs on the resolved key; every real nucleus
-     * behaves exactly like [foldSlot].
-     */
-    @JvmStatic
-    fun foldSlotForDisplay(effectiveKey: Int, display: CharSequence): Int {
-        val displayKey = rimeKey(display)
-        if (displayKey == effectiveKey) return table.find(displayKey)
-        val slot = table.find(displayKey)
-        return if (slot >= 0) slot else table.find(effectiveKey)
+    fun resolveAliasInto(display: CharSequence, out: OwnedBuffer): Boolean {
+        val resolved = aliasResolvedChars[rimeKey(display)] ?: return false
+        // Snapshot the case before rewriting: [display] may be [out] itself, so
+        // reading it inside the write loop would read the cleared buffer.
+        var uppers = 0
+        for (i in 0 until display.length) {
+            if (display[i].isUpperCase()) uppers = uppers or (1 shl i)
+        }
+        out.clear()
+        for (i in resolved.indices) {
+            val ch = resolved[i]
+            out.append(if (uppers and (1 shl i) != 0) ch.uppercaseChar() else ch)
+        }
+        return true
     }
+
+    /**
+     * The parked display's characters behind an already-resolved nucleus, or
+     * null when [resolved] is not one.  Used at render time only: the parked
+     * spelling is what the user typed, the resolved rime is what the state holds.
+     */
+    @JvmStatic
+    fun parkedDisplayChars(resolved: CharSequence): CharArray? =
+        aliasParkedChars[rimeKey(resolved)]
+
+    /**
+     * Fold-data key of the parked display behind [resolved], or 0 when [resolved]
+     * is not parked.  A parked alias folds on its OWN row ("ưo" w→ơ → "ươ")
+     * while every other operation runs on the resolved rime — the single place
+     * the two differ, and it is data-driven, not an accident.
+     */
+    @JvmStatic
+    fun parkedRimeKey(resolved: CharSequence): Int = aliasParkedKey[rimeKey(resolved)] ?: 0
 
     /**
      * FOLD start target: when the nucleus is still empty the fold key [c] starts

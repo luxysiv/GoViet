@@ -13,6 +13,9 @@ import org.junit.Test
  * Bug 2: l u a n a a → 'luana'
  * Bug 3: xuat + space + backspace + a + s → 'xuất'
  * Bug 4: l u y e n e e → 'luyene' (pure typing) and commit "luyên" + 'e' → 'luyene'
+ * Bug 6: a fold key doubled across an âm cuối (buoono → 'buono',
+ *        leenhe → 'lenhe') or a bán âm cuối (daaua → 'daua', daaya → 'daya')
+ *        is a plain letter again
  */
 class BugReproductionTest {
 
@@ -250,6 +253,69 @@ class BugReproductionTest {
         assertEquals("dsa", engine.process("dsa"))
         assertEquals("dxa", engine.process("dxa"))
         assertEquals("tja", engine.process("tja"))
+    }
+
+    // ── Bug 6: a fold key doubled across a coda or a closing semivowel is a
+    //    plain letter again — the aaa/eee/ooo rule extended to those tails ──
+    @Test
+    fun testBug6_buoono_shouldBe_buono() {
+        // "oo" folds uo → uô; the coda "n" is typed next, so the third 'o' is
+        // the doubled key, not a new fold request → the fold is released.
+        assertEquals("buon", engine.process("buon"))
+        assertEquals("buô", engine.process("buoo"))
+        assertEquals("buôn", engine.process("buoon"))
+        assertEquals("buono", engine.process("buoono"))
+    }
+
+    @Test
+    fun testBug6_leenhe_shouldBe_lenhe() {
+        // "ee" folds e → ê, the coda "nh" follows, the second "e" is the doubled
+        // key → ê is released and the 'e' comes out literally.
+        assertEquals("lenh", engine.process("lenh"))
+        assertEquals("lênh", engine.process("lenhe"))
+        assertEquals("lenhe", engine.process("leenhe"))
+    }
+
+    @Test
+    fun testBug6_semivowelTail_shouldBe_plain() {
+        // "aa" folds a → â and the 'u' closes the nucleus as a bán âm cuối;
+        // the last 'a' is the doubled key → "daua", not "dâua".
+        assertEquals("dâu", engine.process("daua"))
+        assertEquals("daua", engine.process("daaua"))
+        // Same with 'y': "ây" is a nucleus (tây, đẩy), so the tail is a
+        // bán âm cuối and the fold is released → "daya".
+        assertEquals("day", engine.process("day"))
+        assertEquals("daya", engine.process("daaya"))
+    }
+
+    @Test
+    fun testBug6_doubledFoldRuleUnchangedElsewhere() {
+        // The prevailing rule itself: a tripled fold key cancels the fold.
+        assertEquals("aa", engine.process("aaa"))
+        assertEquals("ee", engine.process("eee"))
+        assertEquals("oo", engine.process("ooo"))
+        // Adjacent repeats (nothing between the fold key and the repeat) are
+        // untouched by the coda/semivowel tail.
+        assertEquals("luana", engine.process("luanaa"))
+        assertEquals("luyene", engine.process("luyenee"))
+        assertEquals("banana", engine.process("banaana"))
+        // A tone in the tail is transparent: the rule reaches the repeat
+        // through "p" + "s" and releases the fold like any other tail.
+        // fold 'a' at pos 1 → "â"; then coda 'n', tone 's', then 'a' again.
+        // The kept fold would render "ấna" and the released one "ána".
+        assertEquals("ána", engine.process("aansa"))
+        // Same rule, and the tone letter here is NOT an onset consonant, so
+        // this also pins that every tone key is treated alike.
+        assertEquals("òngo", engine.process("oofngo"))
+        assertEquals("dépeel", engine.process("deepseel"))
+        // The whole transforming set stays in sync, not just 'a' and 'o'.
+        assertEquals("aà", engine.process("aafa"))
+        assertEquals("aả", engine.process("aara"))
+        assertEquals("aã", engine.process("aaxa"))
+        assertEquals("aạ", engine.process("aaja"))
+        assertEquals("dépeek", engine.process("deepseek"))
+        // A single trailing fold key after a coda still folds (lênh, hoána).
+        assertEquals("hoána", engine.process("hoansa"))
     }
 
 }

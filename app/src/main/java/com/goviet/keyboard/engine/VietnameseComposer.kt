@@ -17,6 +17,30 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
     var vietnameseModeEnabled: Boolean = true
     var autoCapitalize: Boolean = false
 
+    /**
+     * Adopt-path scratch, owned per composer so it stays thread-confined like
+     * the rest of the engine (see [OwnedBuffer]).  [canonicalScratch] accumulates
+     * the canonical raw; [plainScratch] holds the unfolded nucleus on the
+     * fold-last path, which is a separate buffer because it is still being read
+     * while the canonical raw is written.
+     */
+    private val canonicalScratch = OwnedBuffer()
+    private val plainScratch = OwnedBuffer()
+
+    /**
+     * Display form of the live nucleus, captured before a fold mutates it (see
+     * [FoldAnchor.plainNucleus]).  Owned per composer for the same reason as the
+     * other scratch buffers.
+     */
+    private val nucleusDisplayScratch = OwnedBuffer()
+
+    /**
+     * Display form of a parked nucleus, the input the fold data is keyed on (see
+     * [applyFoldRules]).  Separate from [nucleusDisplayScratch] because the
+     * caller still holds the pre-fold display there while the fold runs.
+     */
+    private val foldNucScratch = OwnedBuffer()
+
     var macroEnabled: Boolean
         get() = options.macroEnabled
         set(v) { options.macroEnabled = v }
@@ -34,7 +58,19 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
         var nucleus: OwnedBuffer = OwnedBuffer(),
         var coda: OwnedBuffer = OwnedBuffer(),
         var tone: Tone = Tone.NONE,
-        var rawSuffix: OwnedBuffer = OwnedBuffer()
+        var rawSuffix: OwnedBuffer = OwnedBuffer(),
+        /**
+         * The nucleus is a parked alias: [nucleus] holds the RESOLVED rime
+         * ("ươ") while the user has only committed to the parked display
+         * ("ưo").  Keeping the resolved rime in the buffer is what lets every
+         * packed key equal the key of the buffer it describes; the parked
+         * spelling comes back only at render time, and when folding.
+         *
+         * Invariant: parked ⟹ no coda and no tone.  Every path that adds a coda
+         * ([tryCoda]) or a tone ([handleToneKey], [applyPendingTone]) unpark first,
+         * and no modifier key can extend "ươ", so the two cannot coexist.
+         */
+        var parked: Boolean = false
     ) {
         /** Per-state render scratch — avoids allocating an OwnedBuffer per display. */
         private val displayScratch = OwnedBuffer()
@@ -45,8 +81,32 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
             coda.clear()
             tone = Tone.NONE
             rawSuffix.clear()
+            parked = false
         }
         fun isEmpty(): Boolean = onset.isEmpty() && nucleus.isEmpty() && coda.isEmpty() && rawSuffix.isEmpty()
+
+        /**
+         * Append the nucleus as the user sees it.  A parked alias renders as its
+         * parked display ("ưo") even though the buffer holds "ươ"; everything
+         * else appends verbatim.  Case is carried over position by position, the
+         * way a fold carries it, so an upper-case pivot over a lower-case
+         * follower ("Ưo") renders "Ưo" instead of flattening to "ƯO".
+         */
+        fun appendNucleusDisplay(out: OwnedBuffer) {
+            if (!parked) {
+                out.append(nucleus)
+                return
+            }
+            val chars = RimeMap.parkedDisplayChars(nucleus)
+            if (chars == null) {
+                out.append(nucleus)
+                return
+            }
+            for (i in chars.indices) {
+                val ch = chars[i]
+                out.append(if (i < nucleus.length && nucleus[i].isUpperCase()) ch.uppercaseChar() else ch)
+            }
+        }
 
         fun toDisplayString(oldTonePlacement: Boolean = false): String {
             toDisplayBuffer(displayScratch, oldTonePlacement)
@@ -56,11 +116,20 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
         fun toDisplayBuffer(out: OwnedBuffer, oldTonePlacement: Boolean = false) {
             out.clear()
             if (isEmpty()) return
+            // Parked ⟹ no coda and no tone, so the parked display is the whole
+            // nucleus and goes out verbatim; handled before the tone branch so a
+            // violated invariant could not silently render the resolved rime.
+            if (parked) {
+                out.append(onset)
+                appendNucleusDisplay(out)
+                out.append(rawSuffix)
+                return
+            }
             if (tone == Tone.NONE || nucleus.isEmpty()) {
-                for (i in 0 until onset.length) out.append(onset[i])
-                for (i in 0 until nucleus.length) out.append(nucleus[i])
-                for (i in 0 until coda.length) out.append(coda[i])
-                for (i in 0 until rawSuffix.length) out.append(rawSuffix[i])
+                out.append(onset)
+                appendNucleusDisplay(out)
+                out.append(coda)
+                out.append(rawSuffix)
                 return
             }
             val rimeKey = RimeMap.keyCat(nucleus, nucleus.length, coda, coda.length)
@@ -70,13 +139,13 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
                 val pending = pendingFoldCodaIndex()
                 if (pending >= 0) toneIdx = pending
             }
-            for (i in 0 until onset.length) out.append(onset[i])
+            out.append(onset)
             for (i in 0 until nucleus.length) {
                 if (i == toneIdx) out.append(VietnameseUnicode.applyTone(nucleus[i], tone))
                 else out.append(nucleus[i])
             }
-            for (i in 0 until coda.length) out.append(coda[i])
-            for (i in 0 until rawSuffix.length) out.append(rawSuffix[i])
+            out.append(coda)
+            out.append(rawSuffix)
         }
 
         /**
@@ -93,7 +162,7 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
             if (c0 != 'm' && c0 != 'p' && c0 != 'n' && c0 != 't' && c0 != 'c') return -1
             val nucStr = nucleus.toStringVal()
             val key = RimeMap.rimeKey(nucStr)
-            for (fk in charArrayOf('e', 'o', 'a', 'w')) {
+            for (fk in RimeMap.VOWEL_MOD_KEYS) {
                 if (RimeMap.foldCodaValid(nucStr, key, fk, c0) != null) {
                     return (nucStr.length - 1).coerceAtLeast(0)
                 }
@@ -225,6 +294,7 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
         resegment(raw, out)
     }
 
+
     /**
      * Fold anchor — the single record of the last Telex fold that touched the
      * nucleus.  Untoggle compares the next key against it; it replaces the old
@@ -234,14 +304,23 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
         var key: Char = '\u0000',
         var rawPos: Int = -1,
         var standalone: Boolean = false,
-        var plainNucleus: String = ""
+        /**
+         * The nucleus as the user saw it BEFORE the fold fired, captured in its
+         * display form — "ưo" for a parked alias, not the resolved "ươ" the
+         * state holds.  The untoggle guard compares the live nucleus against it
+         * to tell "the fold still stands" from "the user kept typing", so a
+         * resolved form here would make the guard always fire.
+         */
+        val plainNucleus: OwnedBuffer = OwnedBuffer()
     ) {
         val active: Boolean get() = key != '\u0000'
-        fun set(key: Char, rawPos: Int, standalone: Boolean = false, plainNucleus: String = "") {
+        fun set(key: Char, rawPos: Int, plainNucleus: OwnedBuffer? = null, standalone: Boolean = false) {
             this.key = key; this.rawPos = rawPos
-            this.standalone = standalone; this.plainNucleus = plainNucleus
+            this.standalone = standalone
+            this.plainNucleus.clear()
+            if (plainNucleus != null) this.plainNucleus.setTo(plainNucleus)
         }
-        fun clear() { key = '\u0000'; rawPos = -1; standalone = false; plainNucleus = "" }
+        fun clear() { key = '\u0000'; rawPos = -1; standalone = false; plainNucleus.clear() }
     }
 
     /** Per-call scan memory — 6 fields + fold anchor (was 12 loose fields).
@@ -252,7 +331,13 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
         var nucKey: Int = 0,
         var rimeKey: Int = 0,
         var lastToneKey: Char = '\u0000',
-        var syllableLocked: Boolean = false,
+        /**
+         * The syllable is still open for a Telex transition.  Named in the
+         * positive so the many guard sites read as one question ("is this still
+         * open?") instead of a double negative; [lockLiteral] is the only way to
+         * close it.
+         */
+        var open: Boolean = true,
         var justUntoggled: Boolean = false,
         val fold: FoldAnchor = FoldAnchor(),
         var pendingTone: Tone = Tone.NONE,
@@ -263,11 +348,26 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
             nucKey = 0
             rimeKey = 0
             lastToneKey = '\u0000'
-            syllableLocked = false
+            open = true
             justUntoggled = false
             fold.clear()
             pendingTone = Tone.NONE
             pendingToneKey = '\u0000'
+        }
+
+        /**
+         * Re-derive [nucKey] and [rimeKey] after the nucleus changed — the one
+         * place that invariant lives.  Every mutation of `out.nucleus` must go
+         * through this, or the packed keys silently describe the old nucleus
+         * and the next coda/tone decision is made on stale data.
+         *
+         * No candidate key is needed: a parked alias keeps the RESOLVED rime in
+         * [SyllableState.nucleus], so the key of the buffer is already the key
+         * the extension math must run on and there is nothing to substitute.
+         */
+        fun repackNucleus(out: SyllableState) {
+            nucKey = RimeMap.rimeKey(out.nucleus)
+            rimeKey = RimeMap.extendKey(nucKey, out.coda, 0, out.coda.length)
         }
     }
 
@@ -303,7 +403,7 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
     /** Append [c] as literal text and hard-lock the rest of the syllable. */
     private fun lockLiteral(out: SyllableState, ctx: ScanCtx, c: Char) {
         out.rawSuffix.append(c)
-        ctx.syllableLocked = true
+        ctx.open = false
     }
 
     /**
@@ -331,16 +431,17 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
                     pos++
                 }
                 cat and CAT_FOLD != 0 -> {
-                    pos = if (cLow == 'w') handleWKey(raw, c, pos, out, ctx)
-                          else handleModifierKey(raw, c, cLow, pos, out, ctx)
+                    if (cLow == 'w') handleWKey(raw, c, pos, out, ctx)
+                    else handleModifierKey(raw, c, cLow, pos, out, ctx)
+                    pos++
                 }
                 cat and CAT_VOWEL != 0 &&
-                    !ctx.syllableLocked &&
+                    ctx.open &&
                     tryPlainVowel(c, out, ctx) -> {
                     pos++
                 }
                 cat and CAT_CONSONANT != 0 &&
-                    !ctx.syllableLocked &&
+                    ctx.open &&
                     out.nucleus.isNotEmpty() &&
                     tryCoda(c, out, ctx) -> {
                     pos++
@@ -355,7 +456,7 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
 
     /** Onset fold handler — returns true when the key was consumed by d→đ or untoggle. */
     private fun tryOnsetFold(c: Char, cLow: Char, out: SyllableState, ctx: ScanCtx): Boolean {
-        if (ctx.syllableLocked || out.onset.isEmpty() || !OnsetMap.isRegisteredFoldKey(cLow)) return false
+        if (!ctx.open || out.onset.isEmpty() || !OnsetMap.isRegisteredFoldKey(cLow)) return false
         val oFold = OnsetMap.foldTarget(ctx.oKey, cLow)
         if (oFold != 0) {
             out.onset.setTo(OnsetMap.applyFold(out.onset, oFold))
@@ -374,7 +475,7 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
 
     /** Tone handler — applies, clears, or untoggles the tone; locks on rejection. */
     private fun handleToneKey(c: Char, cLow: Char, out: SyllableState, ctx: ScanCtx) {
-        if (ctx.syllableLocked) {
+        if (!ctx.open) {
             out.rawSuffix.append(c)
             return
         }
@@ -407,7 +508,7 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
             }
             val rk = ctx.rimeKey
             if (RimeMap.isRimeKeyValidForTone(rk, targetTone)) {
-                resolveAliasNucleus(out)
+                unparkNucleus(out)
                 out.tone = targetTone
                 ctx.lastToneKey = cLow
             } else {
@@ -432,16 +533,50 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
         lockLiteral(out, ctx, c)
     }
 
-    /** Letter that a repeated fold key unfolds back to — plain base of [nuc]. */
-    private fun unfoldToBase(nuc: String): String {
+    /**
+     * Letter that a repeated fold key unfolds back to — plain base of [nuc].
+     * Takes a [CharSequence] so the live nucleus buffer can be unfolded without
+     * a snapshot String on the per-keystroke path.
+     */
+    private fun unfoldToBase(nuc: CharSequence): String {
         var changed = -1
-        for (i in nuc.indices) {
+        for (i in 0 until nuc.length) {
             if (RimeMap.plainOf(nuc[i]) != nuc[i]) { changed = i; break }
         }
-        if (changed < 0) return nuc
+        if (changed < 0) return nuc.toString()
         val sb = StringBuilder(nuc.length)
-        for (i in nuc.indices) sb.append(RimeMap.plainOf(nuc[i]))
+        for (i in 0 until nuc.length) sb.append(RimeMap.plainOf(nuc[i]))
         return sb.toString()
+    }
+
+    /**
+     * True when every key typed between the anchored fold at [foldPos] and [pos]
+     * was absorbed as a coda consonant or as a closing semivowel (the final
+     * vowel of the nucleus) and nothing else.  A fold key repeated in that state
+     * is a *doubled* key, not a second fold request, so the pending fold is
+     * released exactly like the adjacent "aaa → aa" case — the same rule with
+     * the coda/semivowel tail: buoono → buono, leenhe → lenhe, daaua → daua.
+     *
+     * A tone key in the tail is transparent.  A tone marks the nucleus, it does
+     * not build the syllable, so it can no more interrupt the tail than a coda
+     * can.  Every tone key is treated alike — that is what keeps the fold rule
+     * in sync across the whole transforming set, whether the tone letter also
+     * happens to be an onset consonant ('s', 'r', 'x') or not ('f', 'z'):
+     * aansa → ána, oofngo → òngo, deepseel → dépeel.
+     *
+     * Any other key (another fold key, or a rejected letter) locks the syllable,
+     * which keeps it out of the untoggle path altogether.
+     */
+    private fun isFoldTailCodaOrSemivowel(raw: CharSequence, foldPos: Int, pos: Int): Boolean {
+        if (pos <= foldPos + 1) return false
+        for (i in foldPos + 1 until pos) {
+            val c = raw[i].lowercaseChar()
+            if (RimeMap.isBaseVowel(c)) continue
+            if (RimeMap.isToneKey(c)) continue
+            if (OnsetMap.isConsonant(c)) continue
+            return false
+        }
+        return true
     }
 
     /**
@@ -452,8 +587,8 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
      * Everything else goes to the shared fold path so aw→ă, ow→ơ, uw→ư work in
      * both directW modes.
      */
-    private fun handleWKey(raw: CharSequence, c: Char, pos: Int, out: SyllableState, ctx: ScanCtx): Int {
-        if (!options.directW && !ctx.syllableLocked && out.nucleus.isEmpty() &&
+    private fun handleWKey(raw: CharSequence, c: Char, pos: Int, out: SyllableState, ctx: ScanCtx) {
+        if (!options.directW && ctx.open && out.nucleus.isEmpty() &&
             (out.onset.isEmpty() || out.onset[0].lowercaseChar() != 'w')) {
             val startFold = RimeMap.startFoldChar(c)
             if (startFold != '\u0000') {
@@ -462,15 +597,15 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
                     RimeMap.isSyllableDisplayPrefixValid(out.onset, wChar)
                 if (comboOk) {
                     out.nucleus.setTo(wChar)
-                    ctx.nucKey = RimeMap.rimeKey(out.nucleus)
-                    ctx.rimeKey = ctx.nucKey
+                    unparkNucleus(out)
+                    ctx.repackNucleus(out)
                     ctx.fold.set('w', pos, standalone = true)
                     applyPendingTone(out, ctx)
-                    return pos + 1
+                    return
                 }
             }
         }
-        return handleModifierKey(raw, c, 'w', pos, out, ctx)
+        handleModifierKey(raw, c, 'w', pos, out, ctx)
     }
 
     /**
@@ -481,76 +616,75 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
      * only on CAT_FOLD; handleWKey passes a literal 'w'), so no second
      * fold-key lookup is needed here.
      */
-    private fun handleModifierKey(raw: CharSequence, c: Char, cLow: Char, pos: Int, out: SyllableState, ctx: ScanCtx): Int {
-        if (!ctx.syllableLocked && out.nucleus.isNotEmpty() && !ctx.justUntoggled) {
+    private fun handleModifierKey(raw: CharSequence, c: Char, cLow: Char, pos: Int, out: SyllableState, ctx: ScanCtx) {
+        if (ctx.open && out.nucleus.isNotEmpty() && !ctx.justUntoggled) {
             if (ctx.fold.active && cLow == ctx.fold.key &&
                 (pos == ctx.fold.rawPos + 1 ||
-                    (cLow == 'w' && out.coda.isNotEmpty() && pos > ctx.fold.rawPos)) &&
+                    (cLow == 'w' && out.coda.isNotEmpty() && pos > ctx.fold.rawPos) ||
+                    isFoldTailCodaOrSemivowel(raw, ctx.fold.rawPos, pos)) &&
                 !out.nucleus.contentEquals(ctx.fold.plainNucleus)) {
                 if (ctx.fold.standalone) {
                     out.nucleus.clear()
+                    unparkNucleus(out)
                     out.rawSuffix.append(c)
-                    ctx.syllableLocked = true
+                    ctx.open = false
                 } else {
-                    out.nucleus.setTo(unfoldToBase(ctx.fold.plainNucleus))
+                    // Release the fold on the *live* nucleus: on the adjacent
+                    // paths it is still the folded plainNucleus, but across a
+                    // coda/semivowel tail the nucleus has grown (uo → uô → uô…
+                    // / a → â → âu) and only the live form keeps that growth.
+                    out.nucleus.setTo(unfoldToBase(out.nucleus))
+                    unparkNucleus(out)
                     if (out.coda.isNotEmpty()) {
                         out.rawSuffix.append(c)
-                        ctx.syllableLocked = true
+                        ctx.open = false
                     } else {
                         out.nucleus.append(c)
                     }
                 }
                 ctx.fold.clear()
-                ctx.nucKey = if (out.nucleus.isEmpty()) 0 else RimeMap.rimeKey(out.nucleus)
-                ctx.rimeKey = ctx.nucKey
+                ctx.repackNucleus(out)
                 ctx.justUntoggled = true
-                return pos + 1
+                return
             }
-            /*
-             * Parked alias compound: "ưo" (spec.aliasOf "ươ") extends like a
-             * real nucleus and resolves to ươ on any continuation ươ accepts
-             * (tone, vowel, coda); its pivot 'w' folds via its own slot, and
-             * an invalid follower keeps the parked form literal. No flags.
-             */
-            val plainNuc = out.nucleus.toStringVal()
+            // The fold anchor must remember the DISPLAY the user was looking at
+            // before the fold fired, so a parked alias is captured as "ưo" even
+            // though the buffer holds the resolved "ươ".
+            nucleusDisplayScratch.clear()
+            out.appendNucleusDisplay(nucleusDisplayScratch)
             val foldIdx = applyFoldRules(c, ctx.nucKey, pos, raw, out)
             if (foldIdx >= 0) {
-                ctx.fold.set(cLow, pos, plainNucleus = plainNuc)
-                ctx.nucKey = RimeMap.rimeKey(out.nucleus)
-                ctx.rimeKey = RimeMap.extendKey(ctx.nucKey, out.coda, 0, out.coda.length)
+                ctx.fold.set(cLow, pos, plainNucleus = nucleusDisplayScratch)
+                ctx.repackNucleus(out)
                 ctx.justUntoggled = false
-                return pos + 1
+                return
             }
         }
-        if (!ctx.syllableLocked && out.nucleus.isNotEmpty() && cLow != 'w') {
+        if (ctx.open && out.nucleus.isNotEmpty() && cLow != 'w') {
             val combo = RimeMap.combineNucleus(out.nucleus, c)
             if (combo != null) {
                 out.nucleus.setTo(combo)
-                ctx.nucKey = RimeMap.rimeKey(out.nucleus)
-                ctx.rimeKey = RimeMap.extendKey(ctx.nucKey, out.coda, 0, out.coda.length)
-                return pos + 1
+                unparkNucleus(out)
+                ctx.repackNucleus(out)
+                return
             }
         }
-        if (!ctx.syllableLocked && out.coda.isEmpty()) {
-            val candidateKey = RimeMap.extendKeySingle(ctx.nucKey, c)
-            if (RimeMap.isValidPrefix(candidateKey)) {
-                if (out.nucleus.isEmpty() && out.onset.isNotEmpty()) {
-                    if (!RimeMap.isSyllableDisplayPrefixValid(out.onset, c)) {
-                        lockLiteral(out, ctx, c)
-                        return pos + 1
-                    }
+        if (ctx.open) {
+            when (extendNucleus(c, out, ctx, resolveAliasFirst = false)) {
+                NucleusExtend.EXTENDED -> {
+                    ctx.fold.clear()
+                    applyPendingTone(out, ctx)
+                    return
                 }
-                out.nucleus.append(c)
-                ctx.nucKey = RimeMap.effectiveNucleusKey(candidateKey, out.nucleus)
-                ctx.rimeKey = ctx.nucKey
-                ctx.fold.clear()
-                applyPendingTone(out, ctx)
-                return pos + 1
+                NucleusExtend.DISPLAY_REJECTED -> {
+                    lockLiteral(out, ctx, c)
+                    return
+                }
+                NucleusExtend.REJECTED -> Unit
             }
         }
         ctx.justUntoggled = false
         lockLiteral(out, ctx, c)
-        return pos + 1
     }
 
     /** Plain vowel → start a nucleus or extend it; false falls through to literal. */
@@ -562,35 +696,73 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
                 }
             }
             out.nucleus.setTo(c)
-            ctx.nucKey = RimeMap.rimeKey(out.nucleus)
-            ctx.rimeKey = ctx.nucKey
+            unparkNucleus(out)
+            ctx.repackNucleus(out)
             ctx.justUntoggled = false
             applyPendingTone(out, ctx)
             return true
         }
-        if (out.coda.isEmpty()) {
-            val candidateKey = RimeMap.extendKeySingle(ctx.nucKey, c)
-            if (RimeMap.isValidPrefix(candidateKey)) {
-                resolveAliasNucleus(out)
-                out.nucleus.append(c)
-                ctx.nucKey = RimeMap.effectiveNucleusKey(candidateKey, out.nucleus)
-                ctx.rimeKey = ctx.nucKey
-                return true
-            }
-        }
-        return false
+        return extendNucleus(c, out, ctx, resolveAliasFirst = true) == NucleusExtend.EXTENDED
     }
 
-    /** Parked alias nucleus (see [RimeMap.aliasDisplay]) → its real display form. */
-    private fun resolveAliasNucleus(out: SyllableState) {
-        val resolved = RimeMap.aliasDisplay(out.nucleus) ?: return
-        if (out.nucleus.isNotEmpty() && out.nucleus[0].isUpperCase()) {
-            val sb = StringBuilder(resolved.length)
-            for (ch in resolved) sb.append(ch.uppercaseChar())
-            out.nucleus.setTo(sb)
-        } else {
-            out.nucleus.setTo(resolved)
+    /** Outcome of appending a key to the nucleus — see [extendNucleus]. */
+    private enum class NucleusExtend {
+        /** The rime refused the key; the caller decides the literal fallback. */
+        REJECTED,
+
+        /** The nucleus grew; the caller applies the fold/tone side effects. */
+        EXTENDED,
+
+        /**
+         * The rime accepted the key but the result cannot be displayed after the
+         * onset.  Distinct from [REJECTED] because the caller must close the
+         * syllable while leaving [ScanCtx.justUntoggled] alone.
+         */
+        DISPLAY_REJECTED
+    }
+
+    /**
+     * Append [c] to the nucleus when the rime still accepts it — the step shared
+     * by a modifier key ([handleModifierKey]) and a plain vowel
+     * ([tryPlainVowel]).
+     *
+     * [resolveAliasFirst] is the one real difference between the two callers:
+     * a plain vowel unparks a parked nucleus before appending, because a typed
+     * vowel is a statement of intent; a modifier key keeps the nucleus parked.
+     * Each call site keeps its own side effects ([ctx.fold], [applyPendingTone])
+     * so those stay visible at the call site rather than hiding behind a flag.
+     */
+    private fun extendNucleus(
+        c: Char,
+        out: SyllableState,
+        ctx: ScanCtx,
+        resolveAliasFirst: Boolean
+    ): NucleusExtend {
+        if (out.coda.isNotEmpty()) return NucleusExtend.REJECTED
+        val candidateKey = RimeMap.extendKeySingle(ctx.nucKey, c)
+        if (!RimeMap.isValidPrefix(candidateKey)) return NucleusExtend.REJECTED
+        if (out.nucleus.isEmpty() && out.onset.isNotEmpty() &&
+            !RimeMap.isSyllableDisplayPrefixValid(out.onset, c)) {
+            return NucleusExtend.DISPLAY_REJECTED
         }
+        if (resolveAliasFirst) unparkNucleus(out)
+        out.nucleus.append(c)
+        // The append can land on a parked alias ("ư" + 'o' -> "ưo"): resolve it
+        // in place so the buffer keeps holding a real rime, and let the flag
+        // carry the parked spelling.  Appending always invalidates any earlier
+        // parked state, so this assigns rather than ORs.
+        out.parked = RimeMap.resolveAliasInto(out.nucleus, out.nucleus)
+        ctx.repackNucleus(out)
+        return NucleusExtend.EXTENDED
+    }
+
+    /**
+     * Commit to the parked nucleus.  The buffer already holds the resolved rime,
+     * so this only drops the flag — which is also what keeps the
+     * parked ⟹ no coda, no tone invariant true for the paths that add one.
+     */
+    private fun unparkNucleus(out: SyllableState) {
+        out.parked = false
     }
 
     /**
@@ -609,7 +781,7 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
             lockLiteral(out, ctx, c)
             return true
         }
-        resolveAliasNucleus(out)
+        unparkNucleus(out)
         out.coda.append(c)
         ctx.rimeKey = key
         return true
@@ -625,14 +797,26 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
         // OwnedBuffer is a CharSequence: the fold overloads below read it in
         // place, so no snapshot String is allocated on the fold path.
         val nuc = out.nucleus
-        val slot = RimeMap.foldSlotForDisplay(nucKey, nuc)
+        // A parked alias folds on the DISPLAY the user typed ("ưo" w→ơ → "ươ"),
+        // which is its own table row — foldW("ươ") is 0, so the resolved rime's
+        // row would refuse the very fold that defines the alias.  Folding the
+        // display keeps that row authoritative instead of relying on the two
+        // forms agreeing everywhere except the folded index.
+        val nucForFold = if (out.parked) {
+            foldNucScratch.clear()
+            out.appendNucleusDisplay(foldNucScratch)
+            foldNucScratch
+        } else {
+            nuc
+        }
+        val slot = if (out.parked) RimeMap.foldSlot(RimeMap.parkedRimeKey(nuc)) else RimeMap.foldSlot(nucKey)
         if (slot < 0) return -1
         val primary = RimeMap.foldPrimaryAtSlot(slot, c)
         if (primary == 0) return -1
-        val alt = if (c == 'w') RimeMap.foldWAlt(slot) else 0
+        val alt = if (c.lowercaseChar() == 'w') RimeMap.foldWAlt(slot) else 0
 
         if (alt == 0) {
-            val newNuc = RimeMap.applyFold(nuc, primary)
+            val newNuc = RimeMap.applyFold(nucForFold, primary)
             var ok = isValidRime(newNuc, out.coda)
             if (!ok && RimeMap.foldWPrimaryLookahead(slot)) {
                 val tail = predictConsonantTail(raw, rawPos + 1)
@@ -640,12 +824,13 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
             }
             if (!ok) return -1
             out.nucleus.setTo(newNuc)
+            unparkNucleus(out)
             return RimeMap.foldPos(primary)
         }
 
         val tail = predictConsonantTail(raw, rawPos + 1)
-        val primNuc = RimeMap.applyFold(nuc, primary)
-        val altNuc = RimeMap.applyFold(nuc, alt)
+        val primNuc = RimeMap.applyFold(nucForFold, primary)
+        val altNuc = RimeMap.applyFold(nucForFold, alt)
 
         var chosen = pickWVariant(out.coda, tail, primNuc, altNuc, raw, rawPos, out)
         if (chosen == null && tail.isNotEmpty()) {
@@ -660,6 +845,7 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
         }
         if (chosen == null) return -1
         out.nucleus.setTo(chosen)
+        unparkNucleus(out)
         return RimeMap.foldPos(primary)
     }
 
@@ -875,18 +1061,11 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
         val isValid = validSuffix.isEmpty() && isValidRimeOrPrefix
 
         val canonicalRaw = if (isValid) {
-            val sb = StringBuilder()
-            sb.append(OnsetMap.rawKeyForOnset(onset))
-            sb.append(nucleusToRaw(nucleus))
-            val nucAllUpper = nucleus.isNotEmpty() && nucleus.all { it.isUpperCase() }
-            sb.append(coda)
-            val toneKey = validTone.key
-            if (toneKey != null) sb.append(if (nucAllUpper) toneKey.uppercaseChar() else toneKey)
-            VietnameseUnicode.applyCasingFromRaw(sb.toString(), word)
+            canonicalRawOf(canonicalScratch, onset, nucleus, nucleusToRaw(nucleus), coda, null, validTone, word)
         } else { word }
 
         val canonicalFoldLast = if (isValid) {
-            canonicalFoldLastRaw(onset, nucleus, coda, validTone, word)
+            canonicalFoldLastRaw(plainScratch, canonicalScratch, onset, nucleus, coda, validTone, word)
         } else null
 
         return AdoptResult(isValid, onset.length, canonicalRaw, canonicalFoldLast)
@@ -977,6 +1156,41 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
             return if (code in 0 until KEY_CAT.size) KEY_CAT[code] else 0
         }
 
+        /**
+         * onset + nucleusRaw + coda + [extraRaw] + tone key, then the caller's
+         * casing applied — the canonical-raw layout shared by [adoptWord] and
+         * [canonicalFoldLastRaw].  The tone key is upper-cased only when the
+         * whole nucleus is upper-case, which is what keeps an all-caps syllable
+         * (NHA → Nhà, "toà" → "TOÀ") from becoming half-lower.
+         *
+         * [extraRaw] is [canonicalFoldLastRaw]'s trailing fold key; [adoptWord]
+         * has none.  [scratch] is the caller's reusable buffer: this lives in the
+         * companion object, so the buffer must be owned by the composer instance
+         * (thread-confined) rather than allocated per call.
+         */
+        private fun canonicalRawOf(
+            scratch: OwnedBuffer,
+            onset: String,
+            nucleus: String,
+            nucleusRaw: CharSequence,
+            coda: String,
+            extraRaw: Char?,
+            tone: Tone,
+            word: String
+        ): String {
+            scratch.clear()
+            scratch.append(OnsetMap.rawKeyForOnset(onset))
+            scratch.append(nucleusRaw)
+            scratch.append(coda)
+            if (extraRaw != null) scratch.append(extraRaw)
+            val toneKey = tone.key
+            if (toneKey != null) {
+                val nucAllUpper = nucleus.isNotEmpty() && nucleus.all { it.isUpperCase() }
+                scratch.append(if (nucAllUpper) toneKey.uppercaseChar() else toneKey)
+            }
+            return VietnameseUnicode.applyCasingFromRaw(scratch, word)
+        }
+
         @JvmStatic
         fun isToneKey(c: Char): Boolean = RimeMap.isToneKey(c)
 
@@ -1004,11 +1218,12 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
          * (no coda, nothing folded, or a compound fold).
          */
         fun canonicalFoldLastRaw(
+            plainScratch: OwnedBuffer, rawScratch: OwnedBuffer,
             onset: String, nucleus: String, coda: String,
             tone: Tone, word: String
         ): String? {
             if (nucleus.isEmpty() || coda.isEmpty()) return null
-            val plain = StringBuilder(nucleus.length)
+            plainScratch.clear()
             var foldKey: Char? = null
             var foldedCount = 0
             for (ch in nucleus) {
@@ -1016,25 +1231,17 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
                 val pc = RimeMap.plainOf(lc)
                 val fk = RimeMap.foldKeyFor(ch)
                 if (pc != lc && fk != null) {
-                    plain.append(pc)
+                    plainScratch.append(pc)
                     foldedCount++
                     if (foldKey == null) foldKey = fk
                 } else {
-                    plain.append(ch)
+                    plainScratch.append(ch)
                 }
             }
             val fk = foldKey ?: return null
             if (foldedCount != 1) return null
 
-            val sb = StringBuilder()
-            sb.append(OnsetMap.rawKeyForOnset(onset))
-            sb.append(plain)
-            sb.append(coda)
-            sb.append(fk)
-            val nucAllUpper = nucleus.all { it.isUpperCase() }
-            val toneKey = tone.key
-            if (toneKey != null) sb.append(if (nucAllUpper) toneKey.uppercaseChar() else toneKey)
-            return VietnameseUnicode.applyCasingFromRaw(sb.toString(), word)
+            return canonicalRawOf(rawScratch, onset, nucleus, plainScratch, coda, fk, tone, word)
         }
     }
 
@@ -1043,8 +1250,7 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
     private var settingsPrefsListener: android.content.SharedPreferences.OnSharedPreferenceChangeListener? = null
 
     fun loadPreferences(context: Context) {
-        try {
-            AppPreferences.init(context)
+        withPrefs(context) {
             val config = AppPreferences.getEngineConfig()
             applyConfig(config)
             macroStore = MacroRepository(context).loadMacroStore()
@@ -1060,9 +1266,6 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
                 }
                 AppPreferences.registerSettingsPrefsListener(settingsPrefsListener!!)
             }
-        } catch (e: Exception) {
-            // Unreadable preferences leave the engine on its built-in defaults,
-            // which is a usable keyboard; that is the intended outcome here.
         }
     }
 
@@ -1072,13 +1275,10 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
     }
 
     fun reloadMacroStore(context: Context) {
-        try {
-            AppPreferences.init(context)
+        withPrefs(context) {
             applyConfig(AppPreferences.getEngineConfig())
             macroStore = MacroRepository(context).loadMacroStore()
             reset()
-        } catch (e: Exception) {
-            // Keeps the macros loaded so far; the engine stays usable.
         }
     }
 
@@ -1089,14 +1289,27 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
         dirW: Boolean = options.directW,
         oldTone: Boolean = options.oldTonePlacement
     ) {
-        try {
-            AppPreferences.init(context)
+        withPrefs(context) {
             val config = EngineConfig(macroEnabled = macro,
                 autoCapitalize = autoCap, directW = dirW, oldTonePlacement = oldTone)
             AppPreferences.setEngineConfig(config)
             applyConfig(config)
+        }
+    }
+
+    /**
+     * The three prefs entry points differ only in what they do once the store is
+     * reachable, and each must survive an unreachable store the same way: keep
+     * whatever state the engine already holds, which leaves a usable keyboard on
+     * its defaults (an unreadable load), a usable macro set (a failed reload),
+     * and the config the caller already applied (a failed write).
+     */
+    private fun withPrefs(context: Context, block: () -> Unit) {
+        try {
+            AppPreferences.init(context)
+            block()
         } catch (e: Exception) {
-            // The in-memory config was already applied; only the write failed.
+            // Intentionally swallowed: the engine stays usable on current state.
         }
     }
 

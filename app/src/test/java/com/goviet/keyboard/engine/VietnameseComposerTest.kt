@@ -1004,25 +1004,25 @@ class VietnameseComposerTest {
     @Test
     fun testBackspaceDeepseelGraphemeDeletion() {
         // Gõ "deepseel": Telex fold chạy ngay khi gõ (ee -> ê, s -> dấu sắc),
-        // nên display là "dếpeel" trong khi raw buffer vẫn là "deepseel".
+        // nên display là "dépeel" trong khi raw buffer vẫn là "deepseel".
         engine.reset()
         for (c in "deepseel") {
             engine.processKey(c)
         }
-        assertEquals("dếpeel", engine.toDisplayString())
+        assertEquals("dépeel", engine.toDisplayString())
 
         // Backspace xoá ĐÚNG 1 grapheme hiển thị (kiểu Gboard), không xoá phím
-        // thô. Survivor "dếpee" không round-trip được (adoptRoundTrip == null)
+        // thô. Survivor "dépee" không round-trip được (adoptRoundTrip == null)
         // nên buffer bị khoá literal (composeAsVietnamese = false) — không bao giờ bị
         // diễn giải Telex lại.
         val afterDelL = engine.backspace()
-        assertEquals("dếpee", afterDelL)
+        assertEquals("dépee", afterDelL)
         assertFalse(engine.composeAsVietnamese)
 
-        // Gõ 'k' sau khi xoá 'l' chỉ nối chữ vào buffer literal: "dếpee" ->
-        // "dếpeek" (không bị biến đổi tiếp).
+        // Gõ 'k' sau khi xoá 'l' chỉ nối chữ vào buffer literal: "dépee" ->
+        // "dépeek" (không bị biến đổi tiếp).
         val afterAddK = engine.processKey('k').text
-        assertEquals("dếpeek", afterAddK)
+        assertEquals("dépeek", afterAddK)
     }
 
     @Test
@@ -1031,10 +1031,10 @@ class VietnameseComposerTest {
         for (c in "deepseel") {
             engine.processKey(c)
         }
-        assertEquals("dếpee", engine.backspace())
-        assertEquals("dếpe", engine.backspace())
-        assertEquals("dếp", engine.backspace())
-        assertEquals("dế", engine.backspace())
+        assertEquals("dépee", engine.backspace())
+        assertEquals("dépe", engine.backspace())
+        assertEquals("dép", engine.backspace())
+        assertEquals("dé", engine.backspace())
         assertEquals("d", engine.backspace())
         assertEquals("", engine.backspace())
     }
