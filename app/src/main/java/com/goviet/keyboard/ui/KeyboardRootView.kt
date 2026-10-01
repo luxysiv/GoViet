@@ -179,10 +179,14 @@ class KeyboardRootView @JvmOverloads constructor(
             service._panelState.value = PanelState.Letters
         }
         traditionalEmojiView.onSwitchToSymbols = {
-            service._panelState.value = PanelState.SymbolPicker
+            service._panelState.value = PanelState.SymbolPage
         }
         traditionalEmojiView.onKeyPress = { key ->
-            onKeyPress(key)
+            if (key == "SWITCH_TO_SYMBOLS" || key == "#+" || key == "!?#" || key == "?123" || key == "SYM" || key == "SYMBOLS") {
+                service._panelState.value = PanelState.SymbolPage
+            } else {
+                onKeyPress(key)
+            }
         }
 
         // Setup TraditionalEditPadView callbacks
@@ -519,7 +523,11 @@ class KeyboardRootView @JvmOverloads constructor(
                 standardLetterGrid.imeOptions = service.currentInputEditorInfo?.imeOptions ?: 0
                 standardLetterGrid.inputType = service.currentInputEditorInfo?.inputType ?: 0
                 standardLetterGrid.onKey = { key ->
-                    onKeyPress(key)
+                    if (key == "EMOJI") {
+                        service._panelState.value = PanelState.Emoji
+                    } else {
+                        onKeyPress(key)
+                    }
                 }
                 standardLetterGrid.onSwitchToSymbols = {
                     service._panelState.value = PanelState.SymbolPage
@@ -815,7 +823,7 @@ class UnifiedTopHeaderView(context: Context, private val rootView: KeyboardRootV
     private val headerNormal = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
 
     private companion object {
-        val SYMBOL_TAB_LABELS = listOf("recent", "1?#", "()", "⇄", "±", "①", "◇", "₫", "©")
+        val SYMBOL_TAB_LABELS = listOf("recent", "!", "()", "→", "±", "①", "◇", "₫", "©")
         val EMOJI_TAB_ICONS = listOf("recent", "smileys", "gestures", "animals", "food", "places", "activities", "objects", "symbols", "flags")
     }
 
@@ -1039,7 +1047,7 @@ class UnifiedTopHeaderView(context: Context, private val rootView: KeyboardRootV
                         IconDrawer.draw(canvas, context, "recent", tabCx, tabCy, 23f * density, iconPaint.color)
                     } else {
                         textPaint.color = if (isActive) accentColor else inactiveColor
-                        textPaint.textSize = if (label == "1?#") 11f * density else 14f * density
+                        textPaint.textSize = 14f * density
                         textPaint.typeface = if (isActive) headerBold else headerNormal
                         val baseline = KeyboardUtils.centerBaselineY(tabCy, textPaint)
                         canvas.drawText(label, tabCx, baseline, textPaint)

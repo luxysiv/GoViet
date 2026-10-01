@@ -85,7 +85,7 @@ class KeyTouchHandler(
     private var parentView: View? = null
 
     private val previewExcludedCodes = setOf(
-        "SHIFT", "BACKSPACE", "ENTER", "SPACE", "SYM", "ABC", "SWITCH_PAGE"
+        "SHIFT", "BACKSPACE", "ENTER", "SPACE", "SYM", "ABC", "SWITCH_PAGE", "EMOJI"
     )
 
     fun attachView(view: View) {
@@ -158,8 +158,9 @@ class KeyTouchHandler(
                                 if (options != null && options.isNotEmpty()) {
                                     parentView?.getLocationInWindow(locationBuf)
                                     val screenX = locationBuf[0] + px
-                                    activePopupOptionIndex = keyPopup.trackHoverForScreenX(
-                                        screenX, trackedKey.longPressDefaultIndex, activePopupOptionIndex
+                                    val screenY = locationBuf[1] + py
+                                    activePopupOptionIndex = keyPopup.trackHoverForScreen(
+                                        screenX, screenY, trackedKey.longPressDefaultIndex, activePopupOptionIndex
                                     )
                                 }
                             } else {
@@ -335,6 +336,7 @@ class KeyTouchHandler(
                 "SYM" -> onSwitchToSymbols()
                 "SWITCH_PAGE" -> onSwitchPage()
                 "ABC" -> onKey("ABC")
+                "EMOJI" -> onKey("EMOJI")
                 "ENTER" -> onKey("ENTER")
                 else -> {
                     val textVal = if (key.code == "SPACE") "SPACE" else key.code

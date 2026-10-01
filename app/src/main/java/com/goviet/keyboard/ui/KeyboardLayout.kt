@@ -35,7 +35,7 @@ object KeyboardLayout {
         for (key in keys) {
             when {
                 key.code == "SPACE" -> {
-                    key.label = if (languageMode == "VIE") "‹   VI   ›" else "‹   EN   ›"
+                    key.label = if (languageMode == "VIE") "Tiếng Việt" else "English"
                 }
                 key.code == "SHIFT" -> {
                     key.label = when (shiftState) {
@@ -49,7 +49,7 @@ object KeyboardLayout {
                 }
                 key.code == "BACKSPACE" || key.code == "SYM" || key.code == "," ||
                 key.code == "SWITCH_PAGE" || key.code == "ABC" || key.code == "TPAD" ||
-                key.code == "SYM_PICKER" -> { /* static labels */ }
+                key.code == "SYM_PICKER" || key.code == "EMOJI" -> { /* static labels */ }
                 key.code.length == 1 && key.code[0] in '0'..'9' -> {
                     key.label = key.code
                 }
@@ -159,32 +159,28 @@ object KeyboardLayout {
     private fun buildSymbolKeys(keys: MutableList<Key>, page: LetterPage, isSplit: Boolean = false) {
         val isPage2 = page == LetterPage.SYMBOLS_2
 
-        val row0 = if (!isPage2) {
-            listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0")
-        } else {
-            listOf("₫", "€", "$", "£", "¥", "₩", "¢", "₹", "₽", "¤")
-        }
+        val row0 = listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0")
         val row1 = if (!isPage2) {
-            listOf("!", "@", "#", "$", "%", "&", "*", "(", ")", "_")
+            listOf("@", "#", "₫", "%", "&", "-", "+", "(", ")", "/")
         } else {
-            listOf("±", "−", "×", "÷", "=", "≠", "≈", "≤", "≥", "∞")
+            listOf("~", "`", "|", "^", "°", "{", "}", "€", "£", "¥")
         }
         val row2 = if (!isPage2) {
-            listOf("+", "=", "-", "<", ">", "/", "\\", "|", "~", "\"")
+            listOf("*", "\"", "'", ":", ";", "!", "?", "\\", "~")
         } else {
-            listOf("√", "∑", "∫", "π", "Δ", "•", "…", "©", "®", "™")
+            listOf("±", "−", "×", "÷", "=", "≠", "≈", "≤", "≥")
         }
         val row3 = if (!isPage2) {
-            listOf("`", ":", ";", "'", "?", ".", "…")
+            listOf("_", "=", "<", ">", "[", "]", "^")
         } else {
-            listOf("°", "℃", "℉", "§", "¶", "↑", "↓")
+            listOf("∞", "√", "π", "•", "…", "©", "®")
         }
 
         for (sym in row0) addSymbolKey(keys, sym)
         for (sym in row1) addSymbolKey(keys, sym)
         for (sym in row2) addSymbolKey(keys, sym)
 
-        val toggleLabel = if (!isPage2) "=\\" else "?123"
+        val toggleLabel = if (!isPage2) "=\\<" else "?123"
         keys.add(Key(code = "SWITCH_PAGE", label = toggleLabel, isFunctional = true, weight = if (isSplit) 1.25f else 1.4f))
 
         for (sym in row3) addSymbolKey(keys, sym)
@@ -246,29 +242,21 @@ object KeyboardLayout {
         val rows = mutableListOf<List<Key>>()
         if (keys.isEmpty()) return rows
 
-        if (page == LetterPage.LETTERS) {
-            if (keys.size >= 10) rows.add(keys.subList(0, 10))
-            if (keys.size >= 20) rows.add(keys.subList(10, 20))
-            if (keys.size >= 29) rows.add(keys.subList(20, 29))
-            if (keys.size >= 38) rows.add(keys.subList(29, 38))
-            if (keys.size > 38) rows.add(keys.subList(38, keys.size))
-        } else {
-            if (keys.size >= 10) rows.add(keys.subList(0, 10))
-            if (keys.size >= 20) rows.add(keys.subList(10, 20))
-            if (keys.size >= 30) rows.add(keys.subList(20, 30))
-            if (keys.size >= 39) rows.add(keys.subList(30, 39))
-            if (keys.size > 39) rows.add(keys.subList(39, keys.size))
-        }
+        if (keys.size >= 10) rows.add(keys.subList(0, 10))
+        if (keys.size >= 20) rows.add(keys.subList(10, 20))
+        if (keys.size >= 29) rows.add(keys.subList(20, 29))
+        if (keys.size >= 38) rows.add(keys.subList(29, 38))
+        if (keys.size > 38) rows.add(keys.subList(38, keys.size))
         return rows
     }
 
     private fun getSecondaryLabel(letter: String, isShifted: Boolean): String? {
-        val label = secondaryKeyMap[letter] ?: return null
+        val label = secondaryKeyMap[letter.lowercase()] ?: return null
         return if (isShifted && label.length == 1) label[0].uppercaseChar().toString() else label
     }
 
     private fun getLongPressOptions(letter: String, isShifted: Boolean): List<String>? {
-        val list = longPressSymbolMap[letter] ?: secondaryKeyMap[letter]?.let { listOf(it) } ?: return null
+        val list = longPressLetterMap[letter.lowercase()] ?: return null
         if (!isShifted) return list
         val out = ArrayList<String>(list.size)
         for (s in list) out.add(if (s.length == 1) s[0].uppercaseChar().toString() else s.uppercase())

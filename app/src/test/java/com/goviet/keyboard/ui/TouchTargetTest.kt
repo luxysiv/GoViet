@@ -241,7 +241,7 @@ class TouchTargetTest {
         // The control row is judged the same way a press is, so a touch on the
         // space bar finds it, and the top of the panel is not a control key.
         val rowTop = 255f * density - KeyGeometry.PANEL_PADDING_DP * density - 43.4f * density
-        assertEquals(3, view.findBottomKeyIndexAt(180f * density, rowTop + 21.7f * density))
+        assertEquals(2, view.findBottomKeyIndexAt(180f * density, rowTop + 21.7f * density))
         assertEquals(-1, view.findBottomKeyIndexAt(180f * density, 8f * density))
     }
 }

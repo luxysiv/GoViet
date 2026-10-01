@@ -100,6 +100,7 @@ class TraditionalEmojiView @JvmOverloads constructor(
     private var pressedBottomKeyIndex = -1
     private var pressedEmojiIndex = -1
     private val pressedEmojiRect = RectF()
+    private val bottomKeyDrawRect = RectF()
 
     private val verticalSpacing = 7.0f * density
 
@@ -191,17 +192,29 @@ class TraditionalEmojiView @JvmOverloads constructor(
             verticalSpacingPx = verticalSpacing
         )
 
-        // 2. Calculate emoji area bounds
-        emojiAreaLeft = KeyGeometry.panelPaddingPx(density)
-        emojiAreaRight = width - KeyGeometry.panelPaddingPx(density)
-        emojiAreaTop = 6f * density
-        emojiAreaBottom = bottomContainerTop - 6f * density
-        emojiAreaWidth = emojiAreaRight - emojiAreaLeft
-        emojiAreaHeight = emojiAreaBottom - emojiAreaTop
+        // 2. Calculate emoji area bounds with PickerGridGeometry
+        val padding = KeyGeometry.panelPaddingPx(density)
+        val layout = PickerGridGeometry.calculate(
+            widthPx = width,
+            heightPx = height,
+            density = density,
+            itemCount = emojisList.size,
+            bottomRowTopPx = bottomContainerTop,
+            horizontalPaddingPx = padding,
+            topPaddingPx = 6f * density,
+            bottomPaddingPx = 6f * density,
+            cols = EMOJI_COLS
+        )
 
-        colW = emojiAreaWidth / EMOJI_COLS
-        val numRows = (emojisList.size + EMOJI_COLS - 1) / EMOJI_COLS
-        totalContentHeight = numRows * colW
+        emojiAreaLeft = layout.gridLeft
+        emojiAreaRight = layout.gridRight
+        emojiAreaTop = layout.gridTop
+        emojiAreaBottom = layout.gridBottom
+        emojiAreaWidth = layout.gridWidth
+        emojiAreaHeight = layout.gridHeight
+
+        colW = layout.cellSize
+        totalContentHeight = layout.rowCount * layout.cellSize
 
         clampScrollOffset()
     }
@@ -238,27 +251,17 @@ class TraditionalEmojiView @JvmOverloads constructor(
      * touch in the padding or on the control row is not an emoji.
      */
     internal fun findEmojiIndexAt(x: Float, y: Float): Int {
-        if (emojisList.isEmpty() || colW <= 0f) return -1
-        if (y < emojiAreaTop || y > emojiAreaBottom) return -1
-        val minTouch = KeyGeometry.minTouchPx(density)
-        val rowCount = (emojisList.size + EMOJI_COLS - 1) / EMOJI_COLS
-        val col = KeyGeometry.nearestCellIndex(
-            position = x - emojiAreaLeft,
-            origin = 0f,
+        val layout = PickerGridGeometry.Layout(
+            cols = EMOJI_COLS,
+            gridLeft = emojiAreaLeft,
+            gridRight = emojiAreaRight,
+            gridTop = emojiAreaTop,
+            gridBottom = emojiAreaBottom,
             cellSize = colW,
-            cellCount = EMOJI_COLS,
-            minTouchPx = minTouch
+            rowCount = emojiRowCount,
+            maxScrollOffset = max(0f, totalContentHeight - emojiAreaHeight)
         )
-        val row = KeyGeometry.nearestCellIndex(
-            position = y - emojiAreaTop + scrollOffset,
-            origin = 0f,
-            cellSize = colW,
-            cellCount = rowCount,
-            minTouchPx = minTouch
-        )
-        if (col < 0 || row < 0) return -1
-        val index = row * EMOJI_COLS + col
-        return if (index in emojisList.indices) index else -1
+        return layout.findItemIndexAt(x, y, scrollOffset, emojisList.size, KeyGeometry.minTouchPx(density))
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -301,23 +304,25 @@ class TraditionalEmojiView @JvmOverloads constructor(
             val cellRight = cellLeft + colW
             val cellCenterX = (cellLeft + cellRight) / 2f
 
-            if (pressedEmojiIndex == index) {
-                pressedEmojiRect.set(
-                    cellLeft + 2f * density,
-                    cellTop + 2f * density,
-                    cellRight - 2f * density,
-                    cellBottom - 2f * density
-                )
-                KeyRenderer.drawFlatRoundedRect(
-                    canvas = canvas,
-                    rect = pressedEmojiRect,
-                    cornerRadius = 6f * density,
-                    color = keyPressedBgColor,
-                    style = Paint.Style.FILL
-                )
-            }
-
-            canvas.drawText(emoji, cellCenterX, baseline, textPaint)
+            val isPressed = (pressedEmojiIndex == index)
+            pressedEmojiRect.set(
+                cellLeft + 2f * density,
+                cellTop + 2f * density,
+                cellRight - 2f * density,
+                cellBottom - 2f * density
+            )
+            PickerItemRenderer.drawItemCell(
+                canvas = canvas,
+                rect = pressedEmojiRect,
+                text = emoji,
+                isPressed = isPressed,
+                theme = currentTheme,
+                density = density,
+                isEmoji = true,
+                textPaint = textPaint,
+                fillPaint = paint,
+                keyStyle = keyStyle
+            )
         }
         canvas.restore()
 
@@ -325,7 +330,7 @@ class TraditionalEmojiView @JvmOverloads constructor(
         for (i in keysInfo.indices) {
             val key = keysInfo[i]
             val code = key.code
-            val isFunctional = code == "ABC" || code == "!?#" || code == "BACKSPACE"
+            val isFunctional = code == "ABC" || code == "!?#" || code == "SWITCH_TO_SYMBOLS" || code == "#+" || code == "SYM" || code == "?123" || code == "BACKSPACE"
             val isSpecialEnter = code == "ENTER"
 
             val isPressed = (pressedBottomKeyIndex == i)
@@ -339,9 +344,21 @@ class TraditionalEmojiView @JvmOverloads constructor(
                 textColor
             }
 
+            val scale = if (isPressed) 0.96f else 1.0f
+            val cx = key.rect.centerX()
+            val cy = key.rect.centerY()
+            val w = key.rect.width()
+            val h = key.rect.height()
+            bottomKeyDrawRect.set(
+                cx - w * scale / 2f,
+                cy - h * scale / 2f,
+                cx + w * scale / 2f,
+                cy + h * scale / 2f
+            )
+
             KeyRenderer.drawStandardKey(
                 canvas = canvas,
-                drawRect = key.rect,
+                drawRect = bottomKeyDrawRect,
                 shadowRect = key.shadowRect,
                 cornerRadius = 8f * density,
                 density = density,
@@ -354,19 +371,43 @@ class TraditionalEmojiView @JvmOverloads constructor(
                 pressedBgColor = pressedBgColor
             )
 
-            val label = when (code) {
-                "SPACE" -> if (currentLanguageMode == "VIE") "Tiếng Việt" else "English"
-                "ENTER" -> KeyboardUtils.getEnterSymbolLabel(currentImeOptions, currentInputType)
-                else -> key.label
+            when (code) {
+                "ENTER" -> {
+                    KeyboardUtils.drawEnterIcon(
+                        canvas = canvas,
+                        rect = bottomKeyDrawRect,
+                        imeOptions = currentImeOptions,
+                        inputType = currentInputType,
+                        density = density,
+                        color = textColor
+                    )
+                }
+                "BACKSPACE" -> {
+                    textPaint.color = textColor
+                    textPaint.typeface = Typeface.DEFAULT_BOLD
+                    textPaint.textSize = 21f * density
+                    textPaint.textAlign = Paint.Align.CENTER
+                    val baseline = KeyboardUtils.centerBaselineY(bottomKeyDrawRect, textPaint)
+                    canvas.drawText("\u232B", bottomKeyDrawRect.centerX(), baseline, textPaint)
+                }
+                "SPACE" -> {
+                    val spaceLabel = if (currentLanguageMode == "VIE") "Tiếng Việt" else "English"
+                    textPaint.color = subTextColor
+                    textPaint.typeface = Typeface.DEFAULT
+                    textPaint.textSize = 12.5f * density
+                    textPaint.textAlign = Paint.Align.CENTER
+                    val baseline = KeyboardUtils.centerBaselineY(bottomKeyDrawRect, textPaint)
+                    canvas.drawText(spaceLabel, bottomKeyDrawRect.centerX(), baseline, textPaint)
+                }
+                else -> {
+                    textPaint.color = textColor
+                    textPaint.typeface = Typeface.DEFAULT_BOLD
+                    textPaint.textSize = 14f * density
+                    textPaint.textAlign = Paint.Align.CENTER
+                    val baseline = KeyboardUtils.centerBaselineY(bottomKeyDrawRect, textPaint)
+                    canvas.drawText(key.label, bottomKeyDrawRect.centerX(), baseline, textPaint)
+                }
             }
-
-            textPaint.color = textCol
-            textPaint.typeface = if (code == "SPACE") Typeface.DEFAULT else Typeface.DEFAULT_BOLD
-            textPaint.textSize = if (code == "SPACE" || code == "BACKSPACE" || code == "ENTER") 13f * density else 16f * density
-            textPaint.textAlign = Paint.Align.CENTER
-
-            val baseline = KeyboardUtils.centerBaselineY(key.rect, textPaint)
-            canvas.drawText(label, key.rect.centerX(), baseline, textPaint)
         }
     }
 
@@ -438,7 +479,7 @@ class TraditionalEmojiView @JvmOverloads constructor(
                             val code = keysInfo[pressedBottomKeyIndex].code
                             when (code) {
                                 "ABC" -> onBackToLetters?.invoke()
-                                "!?#" -> onSwitchToSymbols?.invoke()
+                                "!?#", "SWITCH_TO_SYMBOLS", "#+", "SYM", "?123" -> onSwitchToSymbols?.invoke()
                                 "BACKSPACE" -> onKeyPress?.invoke("BACKSPACE")
                                 "SPACE" -> onKeyPress?.invoke("SPACE")
                                 "ENTER" -> onKeyPress?.invoke("ENTER")

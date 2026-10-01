@@ -237,9 +237,9 @@ class TraditionalTpadView @JvmOverloads constructor(
         keysList.add(Key(code = "5", label = "5"))
         keysList.add(Key(code = "6", label = "6"))
         if (isPhone) {
-            keysList.add(Key(code = "*", label = "*", secondaryLabel = "#", longPressOptions = listOf("*", "#")))
+            keysList.add(Key(code = ".", label = ".", secondaryLabel = "*", longPressOptions = listOf(".", "*", "#")))
         } else if (isDatetime) {
-            keysList.add(Key(code = "-", label = "-", secondaryLabel = "/", longPressOptions = listOf("-", "/")))
+            keysList.add(Key(code = ".", label = ".", secondaryLabel = "-", longPressOptions = listOf(".", "-", "/")))
         } else {
             keysList.add(Key(code = ".", label = ".", secondaryLabel = "-", longPressOptions = listOf(".", "-", "?", "!", ";", ":")))
         }
@@ -249,16 +249,16 @@ class TraditionalTpadView @JvmOverloads constructor(
         keysList.add(Key(code = "8", label = "8"))
         keysList.add(Key(code = "9", label = "9"))
         if (isPhone) {
-            keysList.add(Key(code = "(", label = "(", secondaryLabel = ")", longPressOptions = listOf("(", ")")))
+            keysList.add(Key(code = ",", label = ",", secondaryLabel = "(", longPressOptions = listOf(",", "(", ")", "#")))
         } else if (isDatetime) {
-            keysList.add(Key(code = ":", label = ":", secondaryLabel = "-", longPressOptions = listOf(":", "-")))
+            keysList.add(Key(code = ",", label = ",", secondaryLabel = ":", longPressOptions = listOf(",", ":", "-", "/")))
         } else if (isNumber && isSigned) {
-            keysList.add(Key(code = "-", label = "-", secondaryLabel = "+", longPressOptions = listOf("-", "+")))
+            keysList.add(Key(code = ",", label = ",", secondaryLabel = "-", longPressOptions = listOf(",", "-", "+")))
         } else {
             keysList.add(Key(code = ",", label = ",", secondaryLabel = "+", longPressOptions = listOf(",", "+", "-", "*", "/", "=")))
         }
 
-        // Row 4
+        // Row 4 - Invariant context layout: ABC, 0, Action (Space or OTP Paste), Enter
         keysList.add(Key(code = "ABC", label = "ABC", isFunctional = true))
         
         if (isPhone) {
@@ -269,12 +269,6 @@ class TraditionalTpadView @JvmOverloads constructor(
 
         if (isOtpField) {
             keysList.add(Key(code = "PASTE_OTP", label = context.getString(R.string.tpad_paste), isFunctional = true))
-        } else if (isPhone) {
-            keysList.add(Key(code = "-", label = "-"))
-        } else if (isDatetime) {
-            keysList.add(Key(code = "/", label = "/"))
-        } else if (isNumber && isDecimal) {
-            keysList.add(Key(code = ".", label = "."))
         } else {
             keysList.add(Key(code = "SPACE", label = context.getString(R.string.key_space)))
         }
@@ -359,8 +353,9 @@ class TraditionalTpadView @JvmOverloads constructor(
                         if (options != null && options.isNotEmpty()) {
                             getLocationInWindow(locationBuf)
                             val screenX = locationBuf[0] + x
-                            activePopupOptionIndex = keyPopup.trackHoverForScreenX(
-                                screenX, trackedKey.longPressDefaultIndex, activePopupOptionIndex
+                            val screenY = locationBuf[1] + y
+                            activePopupOptionIndex = keyPopup.trackHoverForScreen(
+                                screenX, screenY, trackedKey.longPressDefaultIndex, activePopupOptionIndex
                             )
                         }
                     } else {

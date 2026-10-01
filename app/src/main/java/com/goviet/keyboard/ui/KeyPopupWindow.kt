@@ -8,7 +8,6 @@ import android.graphics.Typeface
 import android.view.Gravity
 import android.view.View
 import android.widget.PopupWindow
-
 import com.goviet.core.density
 
 class KeyPopupWindow(private val context: Context) {
@@ -32,18 +31,10 @@ class KeyPopupWindow(private val context: Context) {
     }
 
     private var currentMode: Mode = Mode.PREVIEW
-
-    // Lightweight copy of the last long-press geometry so the touch handler can
-    // map the finger position to an option 1:1 instead of a fixed pixel step.
     private var activeOptions: List<String> = emptyList()
     private var popupWidthPx = 0
+    private var popupHeightPx = 0
 
-    // Anchor (screen key-center X) and direction of the long-press layout, used by
-    // hoverIndexForScreenX and by PopupView to mirror the drawn option order.
-    private var hoverAnchorX = 0f
-    private var growRight = true
-
-    // Last popup on-screen position we requested (PopupWindow has no public x/y getters).
     private var lastX = Int.MIN_VALUE
     private var lastY = Int.MIN_VALUE
 
@@ -51,37 +42,20 @@ class KeyPopupWindow(private val context: Context) {
         val x: Int,
         val y: Int,
         val width: Int,
-        val height: Int,
-        val anchorX: Float,
-        val growRight: Boolean
+        val height: Int
     )
 
     private val locationBuf = IntArray(2)
 
-    /**
-     * Single anchor point for every popup placement. The popup grows TOWARD the
-     * screen center so it never collides with the screen edges:
-     *
-     *  - Keys on the left half (e.g. 'a'): the default option sits on the LEFT,
-     *    next to the key, and additional options extend rightward.
-     *  - Keys on the right half (e.g. 'o'): the default option sits on the RIGHT,
-     *    next to the key, and additional options extend leftward (mirrored order).
-     *
-     * When [orientToKey] is false (key preview) the whole popup is simply
-     * centered on the key. Otherwise the default option's slot is centered on
-     * [PopupLayout.anchorX] (the key's screen center), so the finger is always
-     * over the currently-selected option.
-     */
     private fun anchorPopup(
         anchorView: View,
         keyRect: RectF?,
         widthDp: Int,
-        optionCount: Int,
-        orientToKey: Boolean
+        heightDp: Int
     ): PopupLayout {
         val density = context.density
         val width = (widthDp * density).toInt()
-        val height = (72 * density).toInt()
+        val height = (heightDp * density).toInt()
 
         anchorView.getLocationInWindow(locationBuf)
         val anchorX = if (keyRect != null) {
@@ -94,30 +68,20 @@ class KeyPopupWindow(private val context: Context) {
         val screenHeight = context.resources.displayMetrics.heightPixels
         val margin = (8 * density).toInt()
 
-        val growRight = anchorX < screenWidth / 2f
-
-        // Center the default option's slot on the key. For growRight the whole
-        // popup starts there and extends right; for growLeft it extends left.
-        val anchoredLeft = if (!orientToKey) {
-            anchorX - width / 2f
-        } else {
-            val slot = width.toFloat() / optionCount.coerceAtLeast(1)
-            if (growRight) anchorX - slot / 2f else anchorX + slot / 2f - width
-        }
-        val left = anchoredLeft.coerceIn(
+        val left = (anchorX - width / 2f).coerceIn(
             margin.toFloat(),
             maxOf(margin.toFloat(), (screenWidth - margin - width).toFloat())
         )
 
         val x = left.toInt()
         val yRaw = if (keyRect != null) {
-            locationBuf[1] + keyRect.top - height - 4f * density
+            locationBuf[1] + keyRect.top - height - 6f * density
         } else {
-            locationBuf[1] - (70 * density)
+            locationBuf[1] - height - 6f * density
         }
         val y = yRaw.toInt().coerceIn(margin, maxOf(margin, screenHeight - margin - height))
 
-        return PopupLayout(x, y, width, height, anchorX, growRight)
+        return PopupLayout(x, y, width, height)
     }
 
     fun showPreview(
@@ -131,7 +95,7 @@ class KeyPopupWindow(private val context: Context) {
         activeOptions = emptyList()
         popupView.setPreviewData(label, isDark, theme)
 
-        val layout = anchorPopup(anchorView, keyRect, widthDp = 66, optionCount = 1, orientToKey = false)
+        val layout = anchorPopup(anchorView, keyRect, widthDp = 64, heightDp = 64)
         val (x, y, width, height) = layout
 
         val wasShowing = popupWindow.isShowing
@@ -144,10 +108,10 @@ class KeyPopupWindow(private val context: Context) {
         popupWindow.height = height
         lastX = x
         lastY = y
+        popupWidthPx = width
+        popupHeightPx = height
 
         if (wasShowing) {
-            // Only pay for the WindowManager.updateViewLayout round-trip (main thread,
-            // mid-touch) when the preview actually moved or resized.
             if (oldX != x || oldY != y || oldWidth != width || oldHeight != height) {
                 popupWindow.update(x, y, width, height)
             }
@@ -166,14 +130,19 @@ class KeyPopupWindow(private val context: Context) {
     ) {
         currentMode = Mode.LONG_PRESS
         activeOptions = options
-        val widthDp = if (options.size <= 1) 66 else 44 * options.size
-        val layout = anchorPopup(anchorView, keyRect, widthDp, options.size, orientToKey = true)
-        hoverAnchorX = layout.anchorX
-        growRight = layout.growRight
-        popupView.setLongPressData(options, hoveredIdx, isDark, theme, mirrored = !layout.growRight)
 
-        // Capture the current geometry BEFORE assigning, so the unchanged check below
-        // reflects the real window state rather than the values we are about to set.
+        val numCols = getNumCols(options.size)
+        val numRows = getNumRows(options.size)
+        val (widthDp, heightDp) = when {
+            options.size <= 1 -> Pair(64, 64)
+            numRows == 1 -> Pair(numCols * 44 + 8, 52)
+            numRows == 2 -> Pair(numCols * 44 + 8, 96)
+            else -> Pair(numCols * 44 + 8, 140)
+        }
+
+        val layout = anchorPopup(anchorView, keyRect, widthDp, heightDp)
+        popupView.setLongPressData(options, hoveredIdx, isDark, theme, numCols, numRows)
+
         val wasShowing = popupWindow.isShowing
         val oldX = lastX
         val oldY = lastY
@@ -185,10 +154,9 @@ class KeyPopupWindow(private val context: Context) {
         lastX = layout.x
         lastY = layout.y
         popupWidthPx = layout.width
+        popupHeightPx = layout.height
 
         if (wasShowing) {
-            // Avoid a pointless WindowManager.updateViewLayout (binder round-trip on
-            // the main thread while the finger is down) when geometry is unchanged.
             if (oldX != layout.x || oldY != layout.y || oldWidth != layout.width || oldHeight != layout.height) {
                 popupWindow.update(layout.x, layout.y, layout.width, layout.height)
             }
@@ -197,27 +165,46 @@ class KeyPopupWindow(private val context: Context) {
         }
     }
 
-    /**
-     * Maps the finger's window X onto an option index using the popup's real slot
-     * width, anchored at the key's screen center. The highlight therefore tracks
-     * the finger 1:1 instead of jumping by a hard-coded pixel step, which feels
-     * janky.
-     *
-     * The direction depends on where the key sits: for keys on the left half
-     * (growRight) a rightward drag walks toward higher indices; for keys on the
-     * right half (growLeft) a leftward drag does, i.e. the order runs opposite.
-     */
-    fun hoverIndexForScreenX(screenX: Float, baseIdx: Int): Int {
+    fun hoverIndexForScreen(screenX: Float, screenY: Float, baseIdx: Int): Int {
         if (currentMode != Mode.LONG_PRESS || activeOptions.size <= 1) {
             if (activeOptions.isEmpty()) return 0
             return baseIdx.coerceIn(0, activeOptions.size - 1)
         }
-        val size = activeOptions.size
-        val slot = popupWidthPx.toFloat() / size
-        if (slot <= 0f) return baseIdx.coerceIn(0, size - 1)
-        val slotOffset = (screenX - hoverAnchorX) / slot
-        val steps = if (growRight) Math.round(slotOffset) else -Math.round(slotOffset)
-        return (baseIdx + steps).coerceIn(0, size - 1)
+        val numCols = getNumCols(activeOptions.size)
+        val numRows = getNumRows(activeOptions.size)
+
+        val density = context.density
+        val padding = 4f * density
+        val contentLeft = lastX + padding
+        val contentTop = lastY + padding
+        val contentWidth = popupWidthPx - padding * 2
+        val contentHeight = popupHeightPx - padding * 2
+
+        if (contentWidth <= 0 || contentHeight <= 0) return baseIdx.coerceIn(0, activeOptions.size - 1)
+
+        val colWidth = contentWidth / numCols
+        val rowHeight = contentHeight / numRows
+
+        val relX = screenX - contentLeft
+        val relY = screenY - contentTop
+
+        val col = (relX / colWidth).toInt().coerceIn(0, numCols - 1)
+        val row = (relY / rowHeight).toInt().coerceIn(0, numRows - 1)
+
+        val index = row * numCols + col
+        return index.coerceIn(0, activeOptions.size - 1)
+    }
+
+    fun trackHoverForScreen(screenX: Float, screenY: Float, baseIdx: Int, currentIdx: Int): Int {
+        val idx = hoverIndexForScreen(screenX, screenY, baseIdx)
+        if (idx != currentIdx) {
+            updateHoverIndex(idx)
+        }
+        return idx
+    }
+
+    fun trackHoverForScreenX(screenX: Float, baseIdx: Int, currentIdx: Int): Int {
+        return trackHoverForScreen(screenX, lastY + popupHeightPx / 2f, baseIdx, currentIdx)
     }
 
     fun updateHoverIndex(index: Int) {
@@ -226,22 +213,24 @@ class KeyPopupWindow(private val context: Context) {
         }
     }
 
-    /**
-     * Shared hover entry point for every touch handler (QWERTY + T-pad):
-     * maps the finger to an option, repaints only when the highlight actually
-     * moves, and returns the new index for the caller to store.
-     */
-    fun trackHoverForScreenX(screenX: Float, baseIdx: Int, currentIdx: Int): Int {
-        val idx = hoverIndexForScreenX(screenX, baseIdx)
-        if (idx != currentIdx) {
-            updateHoverIndex(idx)
-        }
-        return idx
-    }
-
     fun dismiss() {
         if (popupWindow.isShowing) {
             popupWindow.dismiss()
+        }
+    }
+
+    companion object {
+        fun getNumCols(size: Int): Int = when {
+            size <= 1 -> 1
+            size <= 6 -> size
+            else -> 6
+        }
+
+        fun getNumRows(size: Int): Int = when {
+            size <= 1 -> 1
+            size <= 6 -> 1
+            size <= 12 -> 2
+            else -> 3
         }
     }
 
@@ -253,7 +242,8 @@ class KeyPopupWindow(private val context: Context) {
 
         private var options: List<String> = emptyList()
         private var hoveredIdx: Int = -1
-        private var mirrored: Boolean = false
+        private var numCols: Int = 1
+        private var numRows: Int = 1
 
         private val density get() = context.density
         private val boldTypeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
@@ -262,11 +252,11 @@ class KeyPopupWindow(private val context: Context) {
             typeface = boldTypeface
         }
 
-        // Preallocated RectFs to avoid any allocation in onDraw
         private val mainRect = RectF()
         private val shadowRect1 = RectF()
         private val shadowRect2 = RectF()
         private val itemHighlightRect = RectF()
+        private val cellRect = RectF()
 
         fun setPreviewData(label: String, isDark: Boolean, theme: KeyboardTheme) {
             this.mode = Mode.PREVIEW
@@ -281,14 +271,16 @@ class KeyPopupWindow(private val context: Context) {
             hoveredIdx: Int,
             isDark: Boolean,
             theme: KeyboardTheme,
-            mirrored: Boolean
+            numCols: Int,
+            numRows: Int
         ) {
             this.mode = Mode.LONG_PRESS
             this.options = options
             this.hoveredIdx = hoveredIdx
             this.isDark = isDark
             this.theme = theme
-            this.mirrored = mirrored
+            this.numCols = numCols
+            this.numRows = numRows
             invalidate()
         }
 
@@ -306,14 +298,14 @@ class KeyPopupWindow(private val context: Context) {
             val w = width.toFloat()
             val h = height.toFloat()
 
-            val shadowPadding = 4f * density
+            val shadowPadding = 3f * density
             mainRect.set(shadowPadding, shadowPadding, w - shadowPadding, h - shadowPadding - 2f * density)
 
             shadowRect1.set(mainRect.left, mainRect.top + 3f * density, mainRect.right, mainRect.bottom + 3f * density)
             KeyRenderer.drawFlatRoundedRect(
                 canvas = canvas,
                 rect = shadowRect1,
-                cornerRadius = 12f * density,
+                cornerRadius = 14f * density,
                 color = if (isDark) 0x24000000 else 0x0F000000,
                 style = Paint.Style.FILL
             )
@@ -322,7 +314,7 @@ class KeyPopupWindow(private val context: Context) {
             KeyRenderer.drawFlatRoundedRect(
                 canvas = canvas,
                 rect = shadowRect2,
-                cornerRadius = 12f * density,
+                cornerRadius = 14f * density,
                 color = if (isDark) 0x3D000000 else 0x1A000000,
                 style = Paint.Style.FILL
             )
@@ -331,7 +323,7 @@ class KeyPopupWindow(private val context: Context) {
             KeyRenderer.drawFlatRoundedRect(
                 canvas = canvas,
                 rect = mainRect,
-                cornerRadius = 12f * density,
+                cornerRadius = 14f * density,
                 color = surfaceVariant,
                 style = Paint.Style.FILL
             )
@@ -340,7 +332,7 @@ class KeyPopupWindow(private val context: Context) {
             KeyRenderer.drawFlatRoundedRect(
                 canvas = canvas,
                 rect = mainRect,
-                cornerRadius = 12f * density,
+                cornerRadius = 14f * density,
                 color = borderColor,
                 style = Paint.Style.STROKE,
                 strokeWidth = 1f * density
@@ -357,28 +349,29 @@ class KeyPopupWindow(private val context: Context) {
             } else {
                 if (options.isEmpty()) return
                 val contentWidth = mainRect.width()
-                val optionWidth = contentWidth / options.size
-                val itemTop = mainRect.top + 3f * density
-                val itemBottom = mainRect.bottom - 3f * density
+                val contentHeight = mainRect.height()
+                val colWidth = contentWidth / numCols
+                val rowHeight = contentHeight / numRows
 
                 for (idx in options.indices) {
-                    // For keys on the right half the option order is mirrored so the
-                    // default option ends up on the right, next to the key, while the
-                    // rest extend leftward toward the screen center.
-                    val originalIdx = if (mirrored) (options.size - 1 - idx) else idx
-                    val optChar = options[originalIdx]
-                    val isHovered = (originalIdx == hoveredIdx)
+                    val row = idx / numCols
+                    val col = idx % numCols
 
-                    val itemLeft = mainRect.left + idx * optionWidth
-                    val itemRight = itemLeft + optionWidth
+                    val optChar = options[idx]
+                    val isHovered = (idx == hoveredIdx)
+
+                    val itemLeft = mainRect.left + col * colWidth
+                    val itemRight = itemLeft + colWidth
+                    val itemTop = mainRect.top + row * rowHeight
+                    val itemBottom = itemTop + rowHeight
 
                     if (isHovered) {
                         val highlightPadding = 2f * density
                         itemHighlightRect.set(
                             itemLeft + highlightPadding,
-                            itemTop,
+                            itemTop + highlightPadding,
                             itemRight - highlightPadding,
-                            itemBottom
+                            itemBottom - highlightPadding
                         )
                         KeyRenderer.drawFlatRoundedRect(
                             canvas = canvas,
@@ -391,11 +384,12 @@ class KeyPopupWindow(private val context: Context) {
 
                     val textOnPrimary = getContrastColor(theme.activeAccentColor)
                     textPaint.color = if (isHovered) textOnPrimary else theme.textColor
-                    textPaint.textSize = 18f * density
+                    textPaint.textSize = if (numRows > 1) 19f * density else 21f * density
                     textPaint.typeface = boldTypeface
 
-                    val baseline = KeyboardUtils.centerBaselineY(mainRect, textPaint)
-                    canvas.drawText(optChar, itemLeft + optionWidth / 2f, baseline, textPaint)
+                    cellRect.set(itemLeft, itemTop, itemRight, itemBottom)
+                    val baseline = KeyboardUtils.centerBaselineY(cellRect, textPaint)
+                    canvas.drawText(optChar, itemLeft + colWidth / 2f, baseline, textPaint)
                 }
             }
         }

@@ -1,34 +1,37 @@
 package com.goviet.keyboard.ui
 
 /**
- * The bottom row of the full-width panels, described once.
+ * The bottom row of the full-width panels.
  *
- * Emoji and symbols used to spell the same six keys out separately, with the
- * same weights and their own copy of the "split the width by weight, minus the
- * gaps" arithmetic. Every panel here draws its bottom row from this, so a
- * change lands on all of them and the two cannot quietly drift apart again.
+ * Emoji and symbols share a 5-key bottom bar layout matching QWERTY and Symbol keyboards:
+ * [ABC] [Switch: ?123 or 🙂] [Space / Language] [⌫] [↵]
  *
- * The only genuine difference between the two is the middle switch key: from
- * emoji you jump to symbols, from symbols you jump back to emoji.
- *
- * Tpad and the edit pad do not use it. A numeric pad has no comma key and no
- * separate backspace in its last row, and forcing it through this shape is how
- * a shared spec turns into a lowest-common-denominator one.
+ * Space bar has weight 5.5f (out of 10.7f), exactly matching QWERTY and Symbol layouts.
  */
 data class BottomBarSpec(
     val switchKeyCode: String,
     val switchKeyLabel: String,
-    val enterLabel: String
+    val enterLabel: String,
+    val hasComma: Boolean = false
 ) {
-    fun buildKeys(): List<Key> = listOf(
-        Key(code = "ABC", label = "ABC", weight = ABC, isFunctional = true),
-        Key(code = COMMA_CODE, label = ",", weight = COMMA),
-        Key(code = switchKeyCode, label = switchKeyLabel, weight = SWITCH, isFunctional = true),
-        // The space key is drawn from the language mode, not from its label.
-        Key(code = "SPACE", label = "", weight = SPACE),
-        Key(code = "BACKSPACE", label = BACKSPACE_GLYPH, weight = BACKSPACE, isFunctional = true),
-        Key(code = "ENTER", label = enterLabel, weight = ENTER, isSpecialEnter = true)
-    )
+    fun buildKeys(): List<Key> = if (hasComma) {
+        listOf(
+            Key(code = "ABC", label = "ABC", weight = ABC, isFunctional = true),
+            Key(code = COMMA_CODE, label = ",", weight = COMMA),
+            Key(code = switchKeyCode, label = switchKeyLabel, weight = SWITCH, isFunctional = true),
+            Key(code = "SPACE", label = "", weight = SPACE),
+            Key(code = "BACKSPACE", label = BACKSPACE_GLYPH, weight = BACKSPACE, isFunctional = true),
+            Key(code = "ENTER", label = enterLabel, weight = ENTER, isSpecialEnter = true)
+        )
+    } else {
+        listOf(
+            Key(code = "ABC", label = "ABC", weight = ABC_5KEY, isFunctional = true),
+            Key(code = switchKeyCode, label = switchKeyLabel, weight = SWITCH_5KEY, isFunctional = true),
+            Key(code = "SPACE", label = "", weight = SPACE_5KEY),
+            Key(code = "BACKSPACE", label = BACKSPACE_GLYPH, weight = BACKSPACE_5KEY, isFunctional = true),
+            Key(code = "ENTER", label = enterLabel, weight = ENTER_5KEY, isSpecialEnter = true)
+        )
+    }
 
     /**
      * Lays [keys] (from [buildKeys]) into the bottom of a panel [widthPx] wide
@@ -71,15 +74,9 @@ data class BottomBarSpec(
     companion object {
         const val COMMA_CODE = ","
 
-        /**
-         * Rows the panel height is divided by when sizing the bottom row. Five,
-         * not one: the row height is measured as if the letter keyboard's five
-         * rows were above it, so the bar sits where it always has.
-         */
         const val ROW_COUNT = 5
 
-        // Weights sum to 9.3, so a 360dp panel gives roughly: ABC 46dp,
-        // comma 35dp, switch 39dp, space 120dp, backspace 42dp, enter 46dp.
+        // Legacy 6-key weights
         const val ABC = 1.3f
         const val COMMA = 1.0f
         const val SWITCH = 1.1f
@@ -87,20 +84,30 @@ data class BottomBarSpec(
         const val BACKSPACE = 1.2f
         const val ENTER = 1.3f
 
+        // 5-key uniform weights matching QWERTY and Symbol keyboard bottom row
+        // (1.4f + 1.2f + 5.5f + 1.2f + 1.4f = 10.7f)
+        const val ABC_5KEY = 1.4f
+        const val SWITCH_5KEY = 1.2f
+        const val SPACE_5KEY = 5.5f
+        const val BACKSPACE_5KEY = 1.2f
+        const val ENTER_5KEY = 1.4f
+
         const val BACKSPACE_GLYPH = "⌫"
 
-        /** Emoji panel: the middle key opens the symbol picker. */
+        /** Emoji panel: [ABC] [?123] [Space] [⌫] [↵] — comma removed, ?123 switch, 5.5f space bar */
         fun forEmoji(enterLabel: String) = BottomBarSpec(
-            switchKeyCode = "!?#",
-            switchKeyLabel = "!?#",
-            enterLabel = enterLabel
+            switchKeyCode = "SYM",
+            switchKeyLabel = "?123",
+            enterLabel = enterLabel,
+            hasComma = false
         )
 
-        /** Symbol picker: the middle key opens the emoji panel. */
+        /** Symbol picker: [ABC] [ , ] [🙂] [Space] [⌫] [↵] */
         fun forSymbols(enterLabel: String) = BottomBarSpec(
             switchKeyCode = "EMOJI",
             switchKeyLabel = "🙂",
-            enterLabel = enterLabel
+            enterLabel = enterLabel,
+            hasComma = true
         )
     }
 }

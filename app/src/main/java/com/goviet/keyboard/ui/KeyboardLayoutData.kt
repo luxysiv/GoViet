@@ -1,42 +1,38 @@
 package com.goviet.keyboard.ui
 
 val secondaryKeyMap = mapOf(
-    "q" to "@", "w" to "#", "e" to "₫", "r" to "_", "t" to "&",
-    "y" to "–", "u" to "±", "i" to "×", "o" to "÷",
-    "p" to "*", "a" to "°", "s" to "?", "d" to "\"",
-    "f" to "'", "g" to ":", "h" to ";",
-    "j" to "/", "k" to "~", "l" to "\\",
-    "z" to "%", "x" to "<", "c" to ">",
-    "v" to "[", "b" to "]", "n" to "{", "m" to "}"
+    "a" to "â",
+    "d" to "đ",
+    "e" to "ê",
+    "o" to "ô",
+    "u" to "ư",
+    "i" to "í",
+    "y" to "ý"
 )
 
-val longPressSymbolMap = mapOf(
-    // Vowels — single symbols from page 2 (symbol pages handle rest)
-    "e" to listOf("₫", "$", "€"),
-    "y" to listOf("–", "—"),
-    "u" to listOf("±", "+"),
-    "i" to listOf("×", "•"),
-    "o" to listOf("÷", "≠"),
-    "a" to listOf("°", "℃"),
-    // Consonants — common daily symbols
-    "q" to listOf("@"),
-    "w" to listOf("#"),
-    "r" to listOf("_", "—"),
-    "t" to listOf("&", "§"),
-    "p" to listOf("*"),
-    "s" to listOf("?", "¿"),
-    "d" to listOf("\"", "“", "”", "„"),
-    "f" to listOf("'", "`"),
-    "g" to listOf(":", "："),
-    "h" to listOf(";", "；"),
-    "j" to listOf("/", "\\", "|"),
-    "k" to listOf("~", "`"),
-    "l" to listOf("\\"),
-    "z" to listOf("%", "‰"),
-    "x" to listOf("<", "«"),
-    "c" to listOf(">", "»"),
-    "b" to listOf("]", "⟩"),
-    "m" to listOf("}")
+val longPressLetterMap = mapOf(
+    // Vowels and d — full accented letters like Gboard
+    "a" to listOf(
+        "â", "ấ", "ầ", "ẩ", "ẫ", "ậ",
+        "ă", "ắ", "ằ", "ẳ", "ẵ", "ặ",
+        "á", "à", "ả", "ã", "ạ"
+    ),
+    "d" to listOf("đ"),
+    "e" to listOf(
+        "ê", "ế", "ề", "ể", "ễ", "ệ",
+        "é", "è", "ẻ", "ẽ", "ẹ"
+    ),
+    "i" to listOf("í", "ì", "ỉ", "ĩ", "ị"),
+    "o" to listOf(
+        "ô", "ố", "ồ", "ổ", "ỗ", "ộ",
+        "ơ", "ớ", "ờ", "ở", "ỡ", "ợ",
+        "ó", "ò", "ỏ", "õ", "ọ"
+    ),
+    "u" to listOf(
+        "ư", "ứ", "ừ", "ử", "ữ", "ự",
+        "ú", "ù", "ủ", "ũ", "ụ"
+    ),
+    "y" to listOf("ý", "ỳ", "ỷ", "ỹ", "ỵ")
 )
 
 val symbolLongPressMap = mapOf(

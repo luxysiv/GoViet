@@ -295,7 +295,7 @@ class StandardLetterGridView @JvmOverloads constructor(
             val topOfRow = currentY
             val bottomOfRow = topOfRow + unitRowHeight
 
-            if (page == LetterPage.LETTERS && rowIndex == 2) {
+            if (rowIndex == 2 && row.size == 9) {
                 val r2WidthAvailable = usableWidth - (horizontalSpacing * 10)
                 val r2UnitWidth = r2WidthAvailable / 9.64f
                 val r2SideMargin = 0.32f * r2UnitWidth

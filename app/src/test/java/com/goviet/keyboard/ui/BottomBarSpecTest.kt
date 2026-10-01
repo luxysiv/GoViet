@@ -7,27 +7,9 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 
-/**
- * The shared bottom row, against the copy of it it replaced.
- *
- * The emoji panel and the symbol picker used to lay out the same six keys
- * separately, with the same weights and their own version of the same
- * arithmetic. [BottomBarSpec] is now the one description of that row, so the
- * thing worth proving is that it lays keys out where the old code did — key for
- * key — on every panel shape the app uses. A refactor that moves the bar is a
- * regression the user feels as the whole keyboard shifting under their thumbs.
- *
- * Robolectric, because the keys are laid out into real [RectF]s.
- */
 @RunWith(RobolectricTestRunner::class)
 class BottomBarSpecTest {
 
-    /**
-     * The emoji panel's old bottom-row layout, copied from the version that
-     * shipped, as the oracle for the new spec. Four of the panel's dp figures
-     * are spelled out here on purpose: if [KeyGeometry] is retuned later, this
-     * is the copy that will disagree, which is the point.
-     */
     private fun legacyBottomRow(
         weights: List<Float>,
         widthPx: Float,
@@ -86,7 +68,7 @@ class BottomBarSpecTest {
             heightPx = heightPx.toFloat(),
             density = density
         )
-        assertEquals(6, keys.size)
+        assertEquals(spec.buildKeys().size, keys.size)
         assertEquals(expected.size, keys.size)
         keys.forEachIndexed { i, key ->
             val e = expected[i]
@@ -100,7 +82,7 @@ class BottomBarSpecTest {
 
     @Test
     fun `the bottom bar lands where the hand-written layout put it`() {
-        val spec = BottomBarSpec.forEmoji(enterLabel = "⏎")
+        val spec = BottomBarSpec.forSymbols(enterLabel = "⏎")
         assertMatchesLegacy(spec, 1080, 765, 3f)   // 360x255dp phone portrait
         assertMatchesLegacy(spec, 1080, 1020, 3f)  // 360x340dp tall phone
         assertMatchesLegacy(spec, 1680, 840, 2f)   // 840x420dp tablet
@@ -109,30 +91,33 @@ class BottomBarSpecTest {
     }
 
     @Test
-    fun `the emoji and symbol bars occupy the same rects, and differ only in the middle key`() {
+    fun `the emoji panel has 5 keys without comma and space matching qwerty`() {
         val density = 3f
         val emojiKeys = layOut(BottomBarSpec.forEmoji("⏎"), 1080, 765, density)
+
+        assertEquals(5, emojiKeys.size)
+        assertEquals("ABC", emojiKeys[0].code)
+        assertEquals("SYM", emojiKeys[1].code)
+        assertEquals("?123", emojiKeys[1].label)
+        assertEquals("SPACE", emojiKeys[2].code)
+        assertEquals(5.5f, emojiKeys[2].weight, 0.001f)
+        assertEquals("BACKSPACE", emojiKeys[3].code)
+        assertEquals("ENTER", emojiKeys[4].code)
+    }
+
+    @Test
+    fun `the symbol bar has 6 keys with comma`() {
+        val density = 3f
         val symbolKeys = layOut(BottomBarSpec.forSymbols("⏎"), 1080, 765, density)
 
-        emojiKeys.forEachIndexed { i, a ->
-            val b = symbolKeys[i]
-            assertEquals(a.rect.left, b.rect.left, 0.01f)
-            assertEquals(a.rect.top, b.rect.top, 0.01f)
-            assertEquals(a.rect.right, b.rect.right, 0.01f)
-            assertEquals(a.rect.bottom, b.rect.bottom, 0.01f)
-        }
-
+        assertEquals(6, symbolKeys.size)
         assertEquals("ABC", symbolKeys[0].code)
         assertEquals(",", symbolKeys[1].code)
         assertEquals("EMOJI", symbolKeys[2].code)
+        assertEquals("🙂", symbolKeys[2].label)
         assertEquals("SPACE", symbolKeys[3].code)
         assertEquals("BACKSPACE", symbolKeys[4].code)
         assertEquals("ENTER", symbolKeys[5].code)
-
-        // From emoji the middle key is the symbol switch, and vice versa.
-        assertEquals("!?#", emojiKeys[2].code)
-        assertEquals("!?#", emojiKeys[2].label)
-        assertEquals("🙂", symbolKeys[2].label)
     }
 
     @Test
@@ -143,8 +128,6 @@ class BottomBarSpecTest {
         val padding = KeyGeometry.panelPaddingPx(density)
         val spacing = KeyGeometry.rowSpacingPx(density)
 
-        // The spec, restated: one weight unit is the width left after the two
-        // paddings and the five gaps, split by the sum of the weights.
         val totalWeight = keys.sumOf { it.weight.toDouble() }.toFloat()
         val unit = (widthPx - 2f * padding - spacing * (keys.size - 1)) / totalWeight
 
@@ -164,9 +147,6 @@ class BottomBarSpecTest {
                 0.01f
             )
         }
-        // Tiling means the row fills the panel exactly: the widths add up to the
-        // available width and every gap between them is paid for, so the last
-        // key ends on the right padding.
         assertEquals(
             "row should fill the panel to the right padding",
             widthPx - padding,
@@ -193,7 +173,6 @@ class BottomBarSpecTest {
             assertTrue("key ${key.code} sits above the panel: ${key.rect}", key.rect.top >= 0f)
             assertTrue("key ${key.code} is not drawn in the panel: ${key.rect}", key.rect.bottom <= 765f)
         }
-        // Space is the widest key, which is what makes the bar readable.
         assertTrue("space should be the widest key", keys[3].rect.width() > keys[0].rect.width())
         assertTrue("space should be the widest key", keys[3].rect.width() > keys[4].rect.width())
     }
@@ -209,14 +188,17 @@ class BottomBarSpecTest {
 
     @Test
     fun `the row count and weights are the ones that keep the bar in place`() {
-        // Five is not a typo: the bar is sized as if the letter keyboard's five
-        // rows sat above it, so it sits where it has always sat. Dividing the
-        // height by one would make the bar half the panel tall.
         assertEquals(5, BottomBarSpec.ROW_COUNT)
         assertEquals(
             9.3f,
             BottomBarSpec.ABC + BottomBarSpec.COMMA + BottomBarSpec.SWITCH +
                 BottomBarSpec.SPACE + BottomBarSpec.BACKSPACE + BottomBarSpec.ENTER,
+            0.0001f
+        )
+        assertEquals(
+            10.7f,
+            BottomBarSpec.ABC_5KEY + BottomBarSpec.SWITCH_5KEY +
+                BottomBarSpec.SPACE_5KEY + BottomBarSpec.BACKSPACE_5KEY + BottomBarSpec.ENTER_5KEY,
             0.0001f
         )
     }

@@ -263,20 +263,40 @@ class SymbolsPickerGridView @JvmOverloads constructor(
             verticalSpacingPx = 7.0f * density
         )
 
-        // Grid viewport runs from the top of the panel to just above the
-        // control row. One cell size drives both drawing and hit-testing.
-        gridTop = 2f * density
-        gridBottom = topOfBottomRow - 2f * density
-        cellSize = width / cols.toFloat()
-        updateGridMetrics()
+        // Unified PickerGridGeometry
+        val layout = PickerGridGeometry.calculate(
+            widthPx = width,
+            heightPx = height,
+            density = density,
+            itemCount = symbolsList.size,
+            bottomRowTopPx = topOfBottomRow,
+            horizontalPaddingPx = 0f,
+            cols = cols
+        )
+        gridTop = layout.gridTop
+        gridBottom = layout.gridBottom
+        cellSize = layout.cellSize
+        rowCount = layout.rowCount
+        maxScrollOffset = layout.maxScrollOffset
+        clampScrollOffset()
     }
 
     internal fun updateGridMetrics() {
-        rowCount = (symbolsList.size + cols - 1) / cols
-        maxScrollOffset = if (cellSize > 0f) {
-            (rowCount * cellSize - (gridBottom - gridTop)).coerceAtLeast(0f)
+        if (cellSize > 0f) {
+            val layout = PickerGridGeometry.calculate(
+                widthPx = width,
+                heightPx = height,
+                density = density,
+                itemCount = symbolsList.size,
+                bottomRowTopPx = gridBottom + 2f * density,
+                horizontalPaddingPx = 0f,
+                cols = cols
+            )
+            rowCount = layout.rowCount
+            maxScrollOffset = layout.maxScrollOffset
         } else {
-            0f
+            rowCount = (symbolsList.size + cols - 1) / cols
+            maxScrollOffset = 0f
         }
         clampScrollOffset()
     }
@@ -292,27 +312,17 @@ class SymbolsPickerGridView @JvmOverloads constructor(
      * claimed by a symbol.
      */
     internal fun findSymbolIndexAt(x: Float, y: Float): Int {
-        if (symbolsList.isEmpty() || cellSize <= 0f) return -1
-        if (y < gridTop || y > gridBottom) return -1
-        val minTouch = KeyGeometry.minTouchPx(density)
-
-        val col = KeyGeometry.nearestCellIndex(
-            position = x,
-            origin = 0f,
+        val layout = PickerGridGeometry.Layout(
+            cols = cols,
+            gridLeft = 0f,
+            gridRight = width.toFloat(),
+            gridTop = gridTop,
+            gridBottom = gridBottom,
             cellSize = cellSize,
-            cellCount = cols,
-            minTouchPx = minTouch
+            rowCount = rowCount,
+            maxScrollOffset = maxScrollOffset
         )
-        val row = KeyGeometry.nearestCellIndex(
-            position = y - gridTop + scrollOffset,
-            origin = 0f,
-            cellSize = cellSize,
-            cellCount = rowCount,
-            minTouchPx = minTouch
-        )
-        if (col < 0 || row < 0) return -1
-        val index = row * cols + col
-        return if (index in symbolsList.indices) index else -1
+        return layout.findItemIndexAt(x, y, scrollOffset, symbolsList.size, KeyGeometry.minTouchPx(density))
     }
 
     private fun findBottomKeyByCoordinates(x: Float, y: Float): Key? =
@@ -348,27 +358,18 @@ class SymbolsPickerGridView @JvmOverloads constructor(
                 )
 
                 val isCellPressed = (i == pressedSymbolIndex)
-                val shouldDrawBg = isCellPressed || (keyStyle == 0 || keyStyle == 1)
-                if (shouldDrawBg) {
-                    val cardColor = if (isCellPressed) {
-                        keyPressedBgColor
-                    } else {
-                        if (isDark) 0xFF2E3544.toInt() else 0xFFFFFFFF.toInt()
-                    }
-                    KeyRenderer.drawFlatRoundedRect(
-                        canvas = canvas,
-                        rect = symbolCardRect,
-                        cornerRadius = 6f * density,
-                        color = cardColor,
-                        style = Paint.Style.FILL
-                    )
-                }
-
-                textPaint.textSize = 19f * density
-                textPaint.typeface = boldTypeface
-                textPaint.color = textColor
-                val baseline = KeyboardUtils.centerBaselineY(symbolCardRect, textPaint)
-                canvas.drawText(sym, symbolCardRect.centerX(), baseline, textPaint)
+                PickerItemRenderer.drawItemCell(
+                    canvas = canvas,
+                    rect = symbolCardRect,
+                    text = sym,
+                    isPressed = isCellPressed,
+                    theme = currentTheme,
+                    density = density,
+                    isEmoji = false,
+                    textPaint = textPaint,
+                    fillPaint = paint,
+                    keyStyle = keyStyle
+                )
             }
             canvas.restoreToCount(saved)
         }
