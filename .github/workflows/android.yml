@@ -2,7 +2,8 @@ name: Android CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, test]
+  workflow_dispatch:
 
 jobs:
   build:
@@ -65,10 +66,12 @@ jobs:
         ./gradlew testDebugUnitTest --stacktrace
 
     - name: Build Release APK
+      if: github.ref == 'refs/heads/main'
       run: |
         ./gradlew assembleRelease -Pandroid.builder.sdkDownload=true --stacktrace
 
     - name: Delete Old GitHub Release
+      if: github.ref == 'refs/heads/main'
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
@@ -77,6 +80,7 @@ jobs:
         git tag -d latest || true
 
     - name: Create GitHub Release
+      if: github.ref == 'refs/heads/main'
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
@@ -89,5 +93,33 @@ jobs:
             --prerelease
         else
           echo "No Release APK found to release!"
+          exit 1
+        fi
+
+    # ---- test branch: installable debug APK for on-device verification ----
+    - name: Build Debug Test APK
+      if: github.ref == 'refs/heads/test'
+      run: |
+        ./gradlew assembleDebug -Pandroid.builder.sdkDownload=true --stacktrace
+
+    - name: Publish Test APK Release
+      if: github.ref == 'refs/heads/test'
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # Recreate the prerelease tag "test-build" so every push to the test
+        # branch replaces the downloadable test APK with the newest one.
+        gh release delete test-build --yes || true
+        git push --delete origin test-build || true
+        git tag -d test-build || true
+        APK_FILES=$(find app/build/outputs/apk/debug/ -name "*.apk" -type f)
+        if [ -n "$APK_FILES" ]; then
+          gh release create test-build $APK_FILES \
+            --title "Test build — test branch" \
+            --notes "Automated debug APK built from the \`test\` branch. Install over your current build to verify fixes before they land on main." \
+            --prerelease \
+            --target "$GITHUB_SHA"
+        else
+          echo "No debug APK found!"
           exit 1
         fi
