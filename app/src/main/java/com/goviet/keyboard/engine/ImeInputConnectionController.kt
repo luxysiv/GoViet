@@ -156,7 +156,16 @@ class ImeInputConnectionController(
      */
     private fun adoptCaretIntoPreedit(editorCaret: Int) {
         val display = lastSetComposingText ?: return
-        val displayOffset = (editorCaret - composingStartInEditor).coerceIn(0, display.length)
+        // A delayed echo can carry the caret of an EARLIER write: geometrically
+        // inside our range, but behind where the editor actually is now.
+        // Adopting that stale position would make the next keystroke insert
+        // mid-preedit — wrong character order plus a caret jump — so the live
+        // editor caret is the source of truth here (the same reasoning as
+        // resolveCompositionAtCursor). The callback value stays as the
+        // fallback for editors that won't report a position.
+        val liveCaret = service.currentInputConnection?.let { realSelectionStart(it) } ?: -1
+        val caret = if (liveCaret >= 0) liveCaret else editorCaret
+        val displayOffset = (caret - composingStartInEditor).coerceIn(0, display.length)
         composingCursorIndex = rawIndexOfDisplay(
             inputEngine.composingRaw(), display, displayOffset, inputEngine.composeAsVietnamese
         )
