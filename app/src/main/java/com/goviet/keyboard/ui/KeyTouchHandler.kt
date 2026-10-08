@@ -191,6 +191,12 @@ class KeyTouchHandler(
                                     longPressHandler.removeCallbacks(longPressRunnable)
                                     keyPopup.dismiss()
                                     trackedKey.isPressed = false
+                                    // Slid off every key: the press is cancelled.
+                                    // Dropping the tracking entry means the
+                                    // release (ACTION_UP / POINTER_UP) finds no
+                                    // key and cannot dispatch a character the
+                                    // user has visually cancelled.
+                                    activePointerKeys.remove(id)
                                     activeTouchedKey = null
                                     invalidate()
                                 }
@@ -257,6 +263,14 @@ class KeyTouchHandler(
                         keyPopup.dismiss()
                     }
                     handleKeyRelease(trackedKey)
+                    if (trackedKey == activeTouchedKey) {
+                        // This finger's tap is dispatched; drop the primary
+                        // reference so a later ACTION_UP from a second finger
+                        // that never touched a key cannot find it stale and
+                        // dispatch the same key a SECOND time (duplicate
+                        // character).
+                        activeTouchedKey = null
+                    }
                     invalidate()
                 }
             }
