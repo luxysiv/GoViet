@@ -79,6 +79,28 @@ class EditorFieldIntentTest {
     fun `a code on its way to the user is a code even with no other words`() {
         assertTrue(EditorFieldIntent.isOneTimeCode("Enter the code we sent you", null))
         assertTrue(EditorFieldIntent.isOneTimeCode("Mã gửi qua SMS", null))
+        assertTrue(EditorFieldIntent.isOneTimeCode("Mã nhận được qua SMS", null))
+    }
+
+    @Test
+    fun `a message field that names a product is not a code field`() {
+        // The camelCase split that makes "verificationCode" readable also
+        // turns "OpenCode" into an ordinary "code", and the delivery word
+        // sits nowhere near it.
+        assertFalse(EditorFieldIntent.isOneTimeCode("Message for OpenCode", null))
+        assertFalse(EditorFieldIntent.isOneTimeCode("Message from OpenCode", null))
+        assertFalse(EditorFieldIntent.isOneTimeCode("Mã nhận được từ OpenCode", null))
+        assertFalse(EditorFieldIntent.isOneTimeCode("Nhập câu hỏi", null))
+        assertFalse(EditorFieldIntent.isOneTimeCode(null, "etOpenCodeMessage"))
+    }
+
+    @Test
+    fun `the word for code still needs the delivery next to it`() {
+        // Three words away is a hint about a message, not about a code.
+        assertFalse(EditorFieldIntent.isOneTimeCode("Message about the code", null))
+        assertFalse(EditorFieldIntent.isOneTimeCode("Mã dự án", null))
+        assertTrue(EditorFieldIntent.isOneTimeCode("Code gửi qua SMS", null))
+        assertTrue(EditorFieldIntent.isOneTimeCode("Tin nhắn có mã gửi cho bạn", null))
     }
 
     @Test

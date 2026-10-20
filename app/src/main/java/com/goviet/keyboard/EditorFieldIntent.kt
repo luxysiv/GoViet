@@ -18,6 +18,8 @@ import java.util.Locale
  * three fields where numbers are the wrong keyboard entirely. An OTP names
  * itself as one: the acronym, "pin", "passcode", or "code" with a word that
  * says the code is for verifying the person rather than labelling the thing.
+ * Failing that, a hint has to put delivery next to the word for code — and a
+ * "code" that is the tail of a name like "OpenCode" is a name, not a code.
  */
 object EditorFieldIntent {
 
@@ -50,17 +52,19 @@ object EditorFieldIntent {
      *
      * Matched word by word, never as substrings. "Mã OTP", "verification code",
      * `edit_otp_code` and `et_pin` are one-time codes; "promo code", "postal
-     * code", "country code" and a hint that merely says "code" are not, and
-     * putting the numeric pad in front of those takes away the keyboard the
-     * field asked for.
+     * code", "country code", a hint that merely says "code", and a plain chat
+     * hint whose only "code" is inside a product name ("Message for
+     * OpenCode") are not, and putting the numeric pad in front of those takes
+     * away the keyboard the field asked for.
      */
     fun isOneTimeCode(hint: CharSequence?, fieldName: CharSequence?): Boolean {
         return mentionsOneTimeCode(hint) || mentionsOneTimeCode(fieldName)
     }
 
     private fun mentionsOneTimeCode(text: CharSequence?): Boolean {
-        val words = wordsOf(text)
-        if (words.isEmpty()) return false
+        val tokens = tokensOf(text)
+        if (tokens.isEmpty()) return false
+        val words = tokens.map { it.value }
 
         // Stands on its own: the acronym, and the two words these fields are
         // named after without anything else.
@@ -74,13 +78,42 @@ object EditorFieldIntent {
         if (phrases.any { it in NOT_A_ONE_TIME_CODE_PHRASES }) return false
         if (phrases.any { it in ONE_TIME_CODE_PHRASES }) return true
 
+        // A "code" that is the tail of a name ("OpenCode", "sourceCode") is
+        // not the word "code" in a sentence: the hint names a product, and the
+        // "ma" or "code" it also carries is a label on that product. "Message
+        // for OpenCode" and "Mã nhận được từ OpenCode" are chat fields. The
+        // explicit rules above still win for the real ones — an OTP hint that
+        // mentions such a product says so itself ("OpenCode verification
+        // code").
+        if (tokens.any { it.inName && it.value == "code" }) return false
+
         // "Enter the code we sent you": no qualifier, but the code is on its
         // way to the user, which is the situation itself. The word for code is
         // "code" in English and "mã" in Vietnamese, which is "ma" once the
         // accents are folded away.
-        val namesTheCode = words.contains("code") || words.contains("ma")
-        if (!namesTheCode) return false
-        return words.any { it in ONE_TIME_CODE_CONTEXT }
+        return deliverySaysTheCodeIsNear(tokens)
+    }
+
+    /**
+     * The weak rule above: a word for code, with delivery evidence close
+     * enough to be about that word. Close is [CONTEXT_SPAN] words away, which
+     * keeps "code we sent" as evidence while "message for ... code" — a chat
+     * hint that only happens to mention a code — stays out.
+     */
+    private fun deliverySaysTheCodeIsNear(tokens: List<Token>): Boolean {
+        val words = tokens.map { it.value }
+        for (index in words.indices) {
+            if (words[index] !in CODE_WORDS) continue
+            val from = maxOf(index - CONTEXT_SPAN, 0)
+            val to = minOf(index + CONTEXT_SPAN, words.lastIndex)
+            for (near in from..to) {
+                if (words[near] in ONE_TIME_CODE_CONTEXT) return true
+                if (near == words.lastIndex) continue
+                val pair = words[near] + " " + words[near + 1]
+                if (pair in ONE_TIME_CODE_CONTEXT) return true
+            }
+        }
+        return false
     }
 
     /**
@@ -100,33 +133,53 @@ object EditorFieldIntent {
         return phrases
     }
 
+    /** One word of the text, and whether it is the tail of a camelCase name. */
+    private class Token(val value: String, val inName: Boolean)
+
     /**
      * Splits [text] into comparable words: accents folded away, lowercased,
      * split on anything that is not a letter or a digit, and split at camelCase
      * humps so a Java field name reads the same as a sentence. Folding the
      * accents is what lets one rule cover "Mã xác thực" and "Ma xac thuc".
+     *
+     * The hump after the first is marked as the tail of a name, because the
+     * split that makes `verificationCode` readable also turns `OpenCode` into
+     * an ordinary "code" — and there "code" is a name, not a hint about a
+     * code.
      */
-    private fun wordsOf(text: CharSequence?): List<String> {
+    private fun tokensOf(text: CharSequence?): List<Token> {
         if (text.isNullOrEmpty()) return emptyList()
         val folded = Normalizer.normalize(text.toString(), Normalizer.Form.NFD)
             .replace(DIACRITICS, "")
-        val spaced = StringBuilder(folded.length + 8)
+        val tokens = mutableListOf<Token>()
+        val word = StringBuilder(folded.length + 8)
+        var inName = false
         var previousWasLower = false
+
+        fun endWord() {
+            if (word.isNotEmpty()) {
+                tokens.add(Token(word.toString().lowercase(Locale.ROOT), inName))
+                word.setLength(0)
+            }
+        }
+
         for (character in folded) {
             if (Character.isLetterOrDigit(character)) {
                 // "verificationCode" -> "verification code"
-                if (Character.isUpperCase(character) && previousWasLower) spaced.append(' ')
-                spaced.append(Character.toLowerCase(character))
+                if (Character.isUpperCase(character) && previousWasLower) {
+                    endWord()
+                    inName = true
+                }
+                word.append(Character.toLowerCase(character))
                 previousWasLower = Character.isLowerCase(character)
             } else {
-                spaced.append(' ')
+                endWord()
+                inName = false
                 previousWasLower = false
             }
         }
-        return spaced.toString()
-            .split(' ')
-            .filter { it.isNotEmpty() }
-            .map { it.lowercase(Locale.ROOT) }
+        endWord()
+        return tokens
     }
 
     private val DIACRITICS = "\\p{M}+".toRegex()
@@ -170,9 +223,21 @@ object EditorFieldIntent {
     /**
      * Evidence that a code is on its way to the user, for hints that say
      * nothing else useful: "enter the code we sent you", "Mã gửi qua SMS".
+     * Matched one word at a time or as a pair, and only next to the word for
+     * code.
      */
     private val ONE_TIME_CODE_CONTEXT = setOf(
         "sent", "sms", "texted", "message", "inbox", "receive", "received",
         "gui", "nhan", "dien thoai", "email"
     )
+
+    /** Words that name a code, for the weak rule above. */
+    private val CODE_WORDS = setOf("code", "ma")
+
+    /**
+     * How far from the word for code the delivery evidence may sit. Two is
+     * what "code we sent" needs; "message for ... code" is three words apart
+     * and is about a message, not about a code.
+     */
+    private const val CONTEXT_SPAN = 2
 }
