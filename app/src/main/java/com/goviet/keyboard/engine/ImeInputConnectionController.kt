@@ -85,6 +85,18 @@ class ImeInputConnectionController(
     var composingStartInEditor = -1
     var composingCursorIndex = 0
 
+    /**
+     * The caret our own last editor write left behind, or -1 when that write
+     * could not know it (no managed range). It answers one cheap question in
+     * [onUpdateSelection]: "is this callback the echo of that write?" When it is,
+     * the editor is already exactly where the engine cursor is, so both the live
+     * caret read and the adoption are skipped — one fewer blocking round-trip on
+     * every keystroke, which is what a heavy WebView needs. A callback that does
+     * not match it is a real tap or a delayed echo, and keeps the old, verified
+     * path.
+     */
+    private var expectedEditorCaret = -1
+
     /** Which removal mechanism this field honours; see [DeliveryMode]. */
     var deliveryMode: DeliveryMode = DeliveryMode.UNKNOWN
         private set
@@ -140,6 +152,10 @@ class ImeInputConnectionController(
     fun shiftPreeditStart(delta: Int) {
         if (delta == 0) return
         if (composingStartInEditor >= 0) composingStartInEditor += delta
+        // The delete that follows moves the caret by an amount this call does not
+        // track, so the next echo must be verified against the editor, not matched
+        // against a prediction.
+        expectedEditorCaret = -1
     }
 
     var userMovedCursor: Boolean = false
@@ -172,15 +188,23 @@ class ImeInputConnectionController(
             // composition and adopt the caret, instead of dropping the buffer and
             // rewriting the word from scratch (the old Zalo flicker).
             SelectionVerdict.KEEP_PREEDIT -> {
+                userMovedCursor = false
+                userSelectedText = false
                 // A transient field has no stable caret to adopt: its hidden text
                 // is drained and cleared after every keystroke, so the position the
                 // editor reports describes text we never wrote. Adopting it would
                 // move the engine cursor into the wrong place and re-order the next
                 // keystroke. The engine cursor is the only one that means anything
                 // there, so it is left alone.
-                if (deliveryMode != DeliveryMode.TRANSIENT) adoptCaretIntoPreedit(newSelStart)
-                userMovedCursor = false
-                userSelectedText = false
+                //
+                // The echo of our own write needs no adoption either: it carries
+                // exactly the caret that write produced, so the engine cursor is
+                // already right and asking the editor where its caret is would be a
+                // blocking round-trip that can only confirm it. Only a caret that
+                // differs from what we wrote can be a real tap inside the word.
+                if (deliveryMode != DeliveryMode.TRANSIENT && newSelStart != expectedEditorCaret) {
+                    adoptCaretIntoPreedit(newSelStart)
+                }
                 return
             }
 
@@ -206,7 +230,13 @@ class ImeInputConnectionController(
         // ours never reaches here (the two branches above absorb it), so any
         // callback arriving here is a real editor-side move and must be acted on
         // immediately — otherwise the next keystroke would land at the old caret.
-        service.currentInputConnection?.let { adoptPrefixAtCaret(it) }
+        //
+        // The echo of a commit is the one exception: it lands exactly where the
+        // commit left the caret, so there is no tap into a word to look for and
+        // the text scan would be a blocking round-trip that finds nothing.
+        if (newSelStart != expectedEditorCaret) {
+            service.currentInputConnection?.let { adoptPrefixAtCaret(it) }
+        }
     }
 
     /**
@@ -228,6 +258,9 @@ class ImeInputConnectionController(
         composingCursorIndex = rawIndexOfDisplay(
             inputEngine.composingRaw(), display, displayOffset, inputEngine.composeAsVietnamese
         )
+        // The editor caret is now known to be [caret]; the next echo of the same
+        // position therefore needs no second read.
+        expectedEditorCaret = caret
     }
 
     /**
@@ -247,6 +280,10 @@ class ImeInputConnectionController(
      * or vowel modifier before taking the word over.
      */
     fun adoptPrefixAtCaret(ic: InputConnection) {
+        // A transient field is drained after every keystroke: there is no committed
+        // word to read and no caret that describes one, so the scan could only cost
+        // a blocking round-trip and adopt text that is not there.
+        if (deliveryMode == DeliveryMode.TRANSIENT) return
         if (inputEngine.isComposing()) return
         if (userSelectedText) return
         if (service._languageMode.value == "ENG" || isBypassVietnameseComposing()) return
@@ -271,6 +308,7 @@ class ImeInputConnectionController(
         // composing region is announced (the preedit carries no span, so no
         // underline can appear over freshly adopted words), so adoption needs
         // no editor call at all.
+        expectedEditorCaret = word.startInEditor + prefix.length
         userMovedCursor = false
     }
 
@@ -290,6 +328,7 @@ class ImeInputConnectionController(
         lastKeyPressTime = 0L
         composingStartInEditor = -1
         composingCursorIndex = 0
+        expectedEditorCaret = -1
         lastExpandedMacro = null
     }
 
@@ -335,7 +374,14 @@ class ImeInputConnectionController(
         return !ic.getSelectedText(0).isNullOrEmpty()
     }
 
-    fun findWordAroundCursor(ic: InputConnection): WordAtCursor? {
+    fun findWordAroundCursor(ic: InputConnection, caret: Int = realSelectionStart(ic)): WordAtCursor? {
+        // Absolute offsets are only meaningful relative to the caret, and the
+        // caret is the editor's to tell us: without it there is no word to
+        // describe, and guessing position 0 would hand back a range pointing at
+        // the start of the document. Checked before the text reads so a field that
+        // will not report a position costs no text round-trips at all.
+        if (caret < 0) return null
+
         val beforeText = ic.getTextBeforeCursor(64, 0)?.toString() ?: ""
         val afterText = ic.getTextAfterCursor(64, 0)?.toString() ?: ""
 
@@ -354,17 +400,10 @@ class ImeInputConnectionController(
         val fullWord = wordBefore + wordAfter
         if (fullWord.isEmpty()) return null
 
-        // Absolute offsets are only meaningful relative to the caret, and the
-        // caret is the editor's to tell us: without it there is no word to
-        // describe, and guessing position 0 would hand back a range pointing at
-        // the start of the document.
-        val curSelStart = realSelectionStart(ic)
-        if (curSelStart < 0) return null
-
         return WordAtCursor(
             text = fullWord,
-            startInEditor = (curSelStart - wordBefore.length).coerceAtLeast(0),
-            endInEditor = curSelStart + wordAfter.length,
+            startInEditor = (caret - wordBefore.length).coerceAtLeast(0),
+            endInEditor = caret + wordAfter.length,
             cursorOffset = wordBefore.length
         )
     }
@@ -410,14 +449,30 @@ class ImeInputConnectionController(
      * session relative to existing committed text at the editor caret.
      */
     private fun resolveCompositionAtCursor(
-        ic: InputConnection,
         key: String,
-        wordAtCursor: WordAtCursor?
+        wordAtCursor: WordAtCursor?,
+        caret: Int
     ) {
+        // A transient field is drained after every keystroke: its text is not
+        // there to adopt and its caret does not describe a word, so the syllable
+        // starts clean and the preedit is written as a plain insertion.
+        if (deliveryMode == DeliveryMode.TRANSIENT) {
+            composingStartInEditor = -1
+            composingCursorIndex = 0
+            inputEngine.composeAsVietnamese = true
+            userMovedCursor = false
+            expectedEditorCaret = -1
+            return
+        }
+
         // -1 when the editor will not say: no managed range is claimed, so the
         // preedit is written as a plain insertion at the editor's own caret.
-        composingStartInEditor = realSelectionStart(ic)
+        composingStartInEditor = caret
         composingCursorIndex = 0
+        // Adoption never moves the editor caret: whatever range is claimed below,
+        // the caret stays exactly where the editor put it, so its next echo can be
+        // recognised without a read.
+        expectedEditorCaret = caret
 
         val wordCursorOffset = wordAtCursor?.cursorOffset ?: 0
         val wordText         = wordAtCursor?.text ?: ""
@@ -539,6 +594,9 @@ class ImeInputConnectionController(
                 ic.deleteSurroundingText(lastStr.length, 0)
             }
         }
+        // The preedit is gone and the caret sits where it began, so the echo of
+        // this delete needs no read either.
+        expectedEditorCaret = if (start >= 0) start else -1
     }
 
     /**
@@ -578,6 +636,9 @@ class ImeInputConnectionController(
             display.startsWith(previous)) {
             val tail = display.substring(previous.length)
             if (tail.isNotEmpty()) ic.commitText(tail, 1)
+            // The commit lands the caret right after the preedit it extended, so
+            // the echo of this write can be recognised without a read.
+            expectedEditorCaret = if (start >= 0) start + display.length else -1
             return
         }
 
@@ -594,6 +655,7 @@ class ImeInputConnectionController(
                     // make the editor redraw the word.
                     ic.setSelection(start + caretInDisplay, start + caretInDisplay)
                 }
+                expectedEditorCaret = start + caretInDisplay
                 return
             }
             // replaceText reported success but the editor ignored it (WebView).
@@ -626,6 +688,7 @@ class ImeInputConnectionController(
         if (start >= 0 && caretInDisplay != display.length) {
             ic.setSelection(start + caretInDisplay, start + caretInDisplay)
         }
+        expectedEditorCaret = if (start >= 0) start + caretInDisplay else -1
     }
 
     private fun deletePreeditSuffix(ic: InputConnection, previous: String, count: Int) {
@@ -686,6 +749,7 @@ class ImeInputConnectionController(
         val caret = realSelectionStart(ic)
         if (caret >= 0) {
             composingStartInEditor = caret - displayLength
+            expectedEditorCaret = caret
         }
     }
 
@@ -836,8 +900,16 @@ class ImeInputConnectionController(
                             clearState()
                         }
                         if (!inputEngine.isComposing()) {
-                            val wordAtCursor = findWordAroundCursor(ic)
-                            resolveCompositionAtCursor(ic, actualKey, wordAtCursor)
+                            if (deliveryMode == DeliveryMode.TRANSIENT) {
+                                // No committed text to read and no caret that
+                                // describes a word: skip the scan entirely.
+                                resolveCompositionAtCursor(actualKey, null, -1)
+                            } else {
+                                // One caret read, shared by the word scan and the
+                                // resolver — the resolver used to ask again.
+                                val caret = realSelectionStart(ic)
+                                resolveCompositionAtCursor(actualKey, findWordAroundCursor(ic, caret), caret)
+                            }
                         }
                         val lastLen = lastSetComposingText?.length ?: 0
                         applyKeyToComposingBuffer(actualKey[0])
@@ -1072,6 +1144,9 @@ class ImeInputConnectionController(
                     }
                     // Pure commit: the text stays exactly as it is, so there is
                     // nothing left to send to the editor.
+                    // Where our own commit left the caret, so its echo can be
+                    // recognised without a read.
+                    expectedEditorCaret = if (start >= 0) start + outputText.length else -1
                     if (expanded != null) {
                         lastExpandedMacro = MacroExpansionRecord(raw, outputText, System.currentTimeMillis())
                     }

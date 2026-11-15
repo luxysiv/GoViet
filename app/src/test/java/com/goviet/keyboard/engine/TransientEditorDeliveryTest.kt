@@ -3,6 +3,8 @@ package com.goviet.keyboard.engine
 import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.BaseInputConnection
+import android.view.inputmethod.ExtractedText
+import android.view.inputmethod.ExtractedTextRequest
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.TextAttribute
 import com.goviet.keyboard.VietnameseInputMethodService
@@ -144,12 +146,16 @@ class TransientEditorDeliveryTest {
  * nothing) behave nothing like a real editor; only key events reach the app's
  * own buffer, which is what [delivered] models.
  */
-private class TransientTerminalEditor(view: View) : BaseInputConnection(view, true) {
+internal class TransientTerminalEditor(view: View) : BaseInputConnection(view, true) {
 
     /** The app-side text, i.e. what the terminal has actually forwarded. */
     val delivered = StringBuilder()
 
     var replaceTextCalls = 0
+
+    /** Blocking reads, counted so a test can prove a path makes none. */
+    var textBeforeCursorCalls = 0
+    var extractedTextCalls = 0
 
     override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
         delivered.append(text)
@@ -182,5 +188,13 @@ private class TransientTerminalEditor(view: View) : BaseInputConnection(view, tr
         return true
     }
 
-    override fun getTextBeforeCursor(n: Int, flags: Int): CharSequence = ""
+    override fun getTextBeforeCursor(n: Int, flags: Int): CharSequence {
+        textBeforeCursorCalls++
+        return ""
+    }
+
+    override fun getExtractedText(request: ExtractedTextRequest, flags: Int): ExtractedText? {
+        extractedTextCalls++
+        return null
+    }
 }
