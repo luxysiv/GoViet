@@ -284,7 +284,7 @@ class BackspaceHandler(
     }
 
     private fun deleteBefore(ic: InputConnection, count: Int) {
-        if (controller.isImmediateCommitMode()) {
+        if (controller.usesKeyEventDeletes()) {
             sendBackspaceEvents(ic, count)
         } else {
             ic.deleteSurroundingText(count, 0)
@@ -292,15 +292,15 @@ class BackspaceHandler(
     }
 
     private fun deleteForwardCount(ic: InputConnection, count: Int) {
-        if (controller.isImmediateCommitMode()) {
-            sendForwardDeleteEvents(ic)
+        if (controller.usesKeyEventDeletes()) {
+            sendForwardDeleteEvents(ic, count)
         } else {
             ic.deleteSurroundingText(0, count)
         }
     }
 
     private fun deleteSelection(ic: InputConnection) {
-        if (controller.isImmediateCommitMode()) {
+        if (controller.usesKeyEventDeletes()) {
             sendBackspaceEvents(ic, 1)
         } else {
             ic.commitText("", 1)
@@ -308,7 +308,7 @@ class BackspaceHandler(
     }
 
     fun replaceComposingText(ic: InputConnection, display: String) {
-        if (controller.isImmediateCommitMode()) {
+        if (controller.usesKeyEventDeletes()) {
             val lastStr = controller.lastSetComposingText ?: ""
             controller.lastSetComposingText = display
             sendBackspaceEvents(ic, lastStr.length)
@@ -328,8 +328,10 @@ class BackspaceHandler(
         }
     }
 
-    private fun sendForwardDeleteEvents(ic: InputConnection) {
-        ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_FORWARD_DEL))
-        ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_FORWARD_DEL))
+    private fun sendForwardDeleteEvents(ic: InputConnection, count: Int) {
+        for (i in 0 until count) {
+            ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_FORWARD_DEL))
+            ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_FORWARD_DEL))
+        }
     }
 }

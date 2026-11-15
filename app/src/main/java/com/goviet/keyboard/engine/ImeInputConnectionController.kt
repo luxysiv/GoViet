@@ -31,6 +31,29 @@ class ImeInputConnectionController(
     var typingMode: TypingMode = TypingMode.VIETNAMESE
         private set
 
+    /**
+     * How an editor accepts the removal half of a preedit rewrite.
+     *
+     * Decided once per field, and only ever from the editor's own text — never
+     * from the return value of a write. replaceText reports success even when
+     * the editor silently ignored it (Chromium's WebView does exactly this), so
+     * "the write landed" is a fact to be verified, not a boolean to be trusted.
+     */
+    enum class DeliveryMode {
+        /** Not decided yet: the first rewrite that has to remove something decides. */
+        UNKNOWN,
+
+        /** The editor keeps the preedit between writes; deleteSurroundingText reaches it. */
+        RETAINS,
+
+        /**
+         * The editor forwards the preedit and drops it on every write — a web
+         * terminal whose hidden field is cleared after each keystroke. Deletions
+         * there have to travel as key events, not text commands.
+         */
+        TRANSIENT,
+    }
+
     fun updateTypingMode(editorInfo: android.view.inputmethod.EditorInfo?) {
         if (editorInfo == null) {
             typingMode = TypingMode.VIETNAMESE
@@ -61,6 +84,31 @@ class ImeInputConnectionController(
     private val displayBuf = OwnedBuffer()
     var composingStartInEditor = -1
     var composingCursorIndex = 0
+
+    /** Which removal mechanism this field honours; see [DeliveryMode]. */
+    var deliveryMode: DeliveryMode = DeliveryMode.UNKNOWN
+        private set
+
+    /**
+     * A new field may be a different kind of editor, so the previous verdict is
+     * forgotten. Called when the input view starts for a field, not on every
+     * state reset: the verdict survives a commit/space because the field does.
+     */
+    fun resetDeliveryMode() {
+        deliveryMode = DeliveryMode.UNKNOWN
+    }
+
+    /**
+     * True when deletions must travel as key events rather than text commands.
+     *
+     * TYPE_NULL terminals always needed this. Transient web fields (a browser
+     * terminal whose hidden textarea is cleared after every keystroke) need it
+     * too, and they are NOT TYPE_NULL — which is exactly why the old code
+     * duplicated characters there: its text-command deletes never reached the
+     * app, so each write re-emitted the whole word.
+     */
+    fun usesKeyEventDeletes(): Boolean =
+        isImmediateCommitMode() || deliveryMode == DeliveryMode.TRANSIENT
 
     /**
      * "Is this onUpdateSelection ours?" is answered by GEOMETRY, not by a ledger of
@@ -124,7 +172,13 @@ class ImeInputConnectionController(
             // composition and adopt the caret, instead of dropping the buffer and
             // rewriting the word from scratch (the old Zalo flicker).
             SelectionVerdict.KEEP_PREEDIT -> {
-                adoptCaretIntoPreedit(newSelStart)
+                // A transient field has no stable caret to adopt: its hidden text
+                // is drained and cleared after every keystroke, so the position the
+                // editor reports describes text we never wrote. Adopting it would
+                // move the engine cursor into the wrong place and re-order the next
+                // keystroke. The engine cursor is the only one that means anything
+                // there, so it is left alone.
+                if (deliveryMode != DeliveryMode.TRANSIENT) adoptCaretIntoPreedit(newSelStart)
                 userMovedCursor = false
                 userSelectedText = false
                 return
@@ -133,7 +187,12 @@ class ImeInputConnectionController(
             SelectionVerdict.USER_MOVE, SelectionVerdict.USER_SELECTION -> {
                 userMovedCursor = true
                 userSelectedText = verdict == SelectionVerdict.USER_SELECTION
-                if (inputEngine.isComposing()) {
+                // A transient field reports the caret of an emptied editor, so an
+                // apparent move is not evidence the user left the word; dropping
+                // the buffer on it would lose a half-typed word. A genuine
+                // selection is still honoured, because selecting text is the one
+                // move a terminal forwards as such.
+                if (inputEngine.isComposing() && (deliveryMode != DeliveryMode.TRANSIENT || verdict == SelectionVerdict.USER_SELECTION)) {
                     // No finishComposingText(): the preedit is written with
                     // replaceText, which never creates a composing span, so there
                     // is nothing to finish. The tracked range dies with the buffer.
@@ -467,6 +526,10 @@ class ImeInputConnectionController(
             if (backspaceCountIfImmediate > 0) {
                 backspaceHandler.sendBackspaceEvents(ic, backspaceCountIfImmediate)
             }
+        } else if (deliveryMode == DeliveryMode.TRANSIENT) {
+            // The word was forwarded to the app as it was typed, so it leaves
+            // through the app's own delete key rather than a text command.
+            if (lastStr.isNotEmpty()) backspaceHandler.sendBackspaceEvents(ic, lastStr.length)
         } else if (lastStr.isNotEmpty()) {
             // Both callers — delete-word and backspace-to-empty — mean "drop the
             // whole preedit". The range is known exactly, so the preedit leaves
@@ -479,69 +542,130 @@ class ImeInputConnectionController(
     }
 
     /**
-     * Writes the whole preedit in ONE editor operation.
+     * Writes the preedit to the editor as the minimal edit against what was
+     * already delivered, in the one order that is correct on every editor.
      *
-     * InputConnection.replaceText (API 25) replaces an explicit range atomically,
-     * so the editor observes a single text change: there is no delete+insert pair
-     * and no frame in which the preedit is missing — that pair is exactly what made
-     * Zalo/Telegram flash on every diacritic ("a" -> "á" used to be two commands).
+     * The common case — the new display is the old one plus a tail, caret at the
+     * end — commits ONLY the tail. That is the single write that is correct
+     * everywhere: a normal editor appends at the caret, while a transient field
+     * (a web terminal whose hidden textarea was already forwarded and cleared)
+     * has nothing left to replace, so re-committing the whole word would deliver
+     * it twice — the "nhân chữ" duplication. A tail is always new text, so it
+     * lands exactly once in both.
      *
-     * It is also the API that can never draw a composing underline: AOSP
-     * BaseInputConnection.replaceText() calls removeComposingSpans() and then
-     * replaceTextInternal(..., composing = false), which by construction skips the
-     * candidatesTextStyleSpans (UnderlineSpan) that setComposingText would apply.
-     * (setComposingText would only stay underline-free if the IME pre-wraps the
-     * text in a Spannable — and setComposingRegion has no such escape hatch at
-     * all, so adopting an existing word as a composing region would underline it.)
+     * Only when something inside the preedit changed (a tone mark, a vowel fold,
+     * a backspace, a caret moved into the word) does a removal become necessary.
+     * [diffRewrite] then deletes just the changed suffix through the mechanism
+     * the editor actually honours, chosen once by [DeliveryMode]. replaceText is
+     * tried first because it is atomic and leaves no frame in which the word is
+     * missing (the old Zalo/Telegram flicker), but its success is verified
+     * against the editor's text, not trusted: it returns true even when ignored.
      *
-     * The range is ours by construction, so the preedit bounds are exact without
-     * the editor ever reporting a composing region.
-     *
-     * This is also the single owner of the preedit bookkeeping: [lastSetComposingText]
-     * is set here, BEFORE the editor is touched, so at every point of the call the
-     * local state describes the editor as it WILL be — the invariant that makes the
-     * echo reconciliation in [onUpdateSelection] provable instead of assumed.
+     * [lastSetComposingText] stays the single owner of the preedit bookkeeping:
+     * it holds what the editor was given, is read here as the previous delivery,
+     * and is replaced before the editor is touched, so the echo reconciliation
+     * in [onUpdateSelection] stays provable.
      */
-    fun writePreedit(ic: InputConnection, display: String, oldLen: Int = lastSetComposingText?.length ?: 0) {
+    fun writePreedit(ic: InputConnection, display: String) {
+        val previous = lastSetComposingText ?: ""
         val start = composingStartInEditor
         val caretInDisplay = displayCursorIndex()
-        val caret = if (start >= 0) start + caretInDisplay else -1
         lastSetComposingText = display
-        if (start >= 0 && ic.replaceText(start, start + oldLen, display, 1, null)) {
-            // newCursorPosition = 1 always lands the caret after the whole new
-            // text, so a preedit caret in the middle needs one extra
-            // selection-only call: it changes no text, hence cannot make the
-            // editor redraw the word.
-            if (caretInDisplay != display.length) {
-                ic.setSelection(caret, caret)
-            }
+
+        // Fast path: a pure extension at the end of the preedit needs no removal.
+        if (caretInDisplay == display.length &&
+            display.length >= previous.length &&
+            display.startsWith(previous)) {
+            val tail = display.substring(previous.length)
+            if (tail.isNotEmpty()) ic.commitText(tail, 1)
             return
         }
-        legacyRewrite(ic, oldLen, display, caretInDisplay)
+
+        if (deliveryMode != DeliveryMode.TRANSIENT &&
+            start >= 0 &&
+            ic.replaceText(start, start + previous.length, display, 1, null)) {
+            // Already proven to land here, or proven right now on first use.
+            if (deliveryMode == DeliveryMode.RETAINS || verifyDelivery(ic, display)) {
+                deliveryMode = DeliveryMode.RETAINS
+                if (caretInDisplay != display.length) {
+                    // newCursorPosition = 1 always lands the caret after the
+                    // whole new text, so a preedit caret in the middle needs one
+                    // extra selection-only call: it changes no text, hence cannot
+                    // make the editor redraw the word.
+                    ic.setSelection(start + caretInDisplay, start + caretInDisplay)
+                }
+                return
+            }
+            // replaceText reported success but the editor ignored it (WebView).
+            // The old preedit is still in front of the caret, so the diff below
+            // is measured from the right place — only delivered the other way.
+            deliveryMode = DeliveryMode.TRANSIENT
+        }
+
+        diffRewrite(ic, display, previous, start, caretInDisplay)
     }
 
     /**
-     * Fallback for editors whose InputConnection does not implement replaceText
-     * (Flutter's TextInputConnection and other hand-rolled connections): one
-     * delete of the old preedit plus one commit of the new one, in that order,
-     * inside the caller's single batch edit. This guards the EDITOR, not the
-     * platform version, and stays as long as such editors exist.
+     * Deletes only the changed suffix of the delivered preedit and commits the
+     * new tail. Used for transient fields and for editors that do not implement
+     * replaceText (Flutter's TextInputConnection and other hand-rolled
+     * connections); the removal mechanism is chosen by [deletePreeditSuffix].
      */
-    private fun legacyRewrite(ic: InputConnection, oldLen: Int, display: String, caretInDisplay: Int) {
-        val start = composingStartInEditor
-        val caret = if (start >= 0) start + caretInDisplay else -1
-        if (oldLen > 0) {
-            if (start >= 0 && caretInDisplay != oldLen) {
-                ic.setSelection(start + oldLen, start + oldLen)
-            }
-            ic.deleteSurroundingText(oldLen, 0)
-        }
-        if (display.isNotEmpty()) {
-            ic.commitText(display, 1)
-        }
+    private fun diffRewrite(
+        ic: InputConnection,
+        display: String,
+        previous: String,
+        start: Int,
+        caretInDisplay: Int
+    ) {
+        val prefix = commonPrefixLength(previous, display)
+        val deleteCount = previous.length - prefix
+        if (deleteCount > 0) deletePreeditSuffix(ic, previous, deleteCount)
+        val insert = display.substring(prefix)
+        if (insert.isNotEmpty()) ic.commitText(insert, 1)
         if (start >= 0 && caretInDisplay != display.length) {
-            ic.setSelection(caret, caret)
+            ic.setSelection(start + caretInDisplay, start + caretInDisplay)
         }
+    }
+
+    private fun deletePreeditSuffix(ic: InputConnection, previous: String, count: Int) {
+        when (deliveryMode) {
+            DeliveryMode.TRANSIENT -> backspaceHandler.sendBackspaceEvents(ic, count)
+            DeliveryMode.RETAINS -> ic.deleteSurroundingText(count, 0)
+            DeliveryMode.UNKNOWN -> {
+                // Decide once, by asking the editor whether the text we already
+                // delivered is really in front of the caret. A stale read here
+                // only means the field is treated as transient, which is safe:
+                // key-event deletes reach both kinds of editor.
+                if (verifyDelivery(ic, previous)) {
+                    deliveryMode = DeliveryMode.RETAINS
+                    ic.deleteSurroundingText(count, 0)
+                } else {
+                    deliveryMode = DeliveryMode.TRANSIENT
+                    backspaceHandler.sendBackspaceEvents(ic, count)
+                }
+            }
+        }
+    }
+
+    /**
+     * Asks the editor whether [expected] is the text right before the caret.
+     * This is the only trustworthy answer to "did the write land": both
+     * replaceText and deleteSurroundingText report success even when the editor
+     * ignored them, so a false here is treated as "this field is transient",
+     * which routes later removals through key events.
+     */
+    private fun verifyDelivery(ic: InputConnection, expected: String): Boolean {
+        if (expected.isEmpty()) return true
+        val before = ic.getTextBeforeCursor(expected.length, 0)?.toString() ?: return false
+        return before.endsWith(expected)
+    }
+
+    private fun commonPrefixLength(a: String, b: String): Int {
+        val n = minOf(a.length, b.length)
+        var i = 0
+        while (i < n && a[i] == b[i]) i++
+        return i
     }
 
     /**
@@ -584,7 +708,7 @@ class ImeInputConnectionController(
             }
             ic.commitText(compiled, 1)
         } else {
-            writePreedit(ic, compiled, oldLen)
+            writePreedit(ic, compiled)
         }
     }
 
@@ -908,13 +1032,35 @@ class ImeInputConnectionController(
                             backspaceHandler.sendBackspaceEvents(ic, preeditLen)
                         }
                         ic.commitText(outputText, 1)
+                    } else if (deliveryMode == DeliveryMode.TRANSIENT) {
+                        // The word reached the app as it was typed, so on a plain
+                        // commit only the separator is new. A macro has to retract
+                        // the delivered word through the app's own delete key and
+                        // type the expansion in its place.
+                        if (macroExpanded != null) {
+                            if (preeditLen > 0) {
+                                backspaceHandler.sendBackspaceEvents(ic, preeditLen)
+                            }
+                            ic.commitText(outputText, 1)
+                        } else if (wordBreak.isNotEmpty()) {
+                            ic.commitText(wordBreak, 1)
+                        }
                     } else if (macroExpanded != null) {
                         // Macro expansion replaces the whole preedit range in one
                         // atomic op, so the word never blinks between the old and
-                        // the expanded text.
-                        if (start < 0 || !ic.replaceText(start, start + preeditLen, outputText, 1, null)) {
+                        // the expanded text. The write is verified the same way a
+                        // keystroke's is: replaceText reports success even when the
+                        // editor ignored it, so a field that never needed a rewrite
+                        // until now (a terminal typed in plain letters) is detected
+                        // here instead of silently keeping the unexpanded word.
+                        val replaced = start >= 0 &&
+                            ic.replaceText(start, start + preeditLen, outputText, 1, null)
+                        if (replaced && (deliveryMode == DeliveryMode.RETAINS || verifyDelivery(ic, outputText))) {
+                            deliveryMode = DeliveryMode.RETAINS
+                        } else {
+                            deliveryMode = DeliveryMode.TRANSIENT
                             if (preeditLen > 0) {
-                                ic.deleteSurroundingText(preeditLen, 0)
+                                backspaceHandler.sendBackspaceEvents(ic, preeditLen)
                             }
                             ic.commitText(outputText, 1)
                         }

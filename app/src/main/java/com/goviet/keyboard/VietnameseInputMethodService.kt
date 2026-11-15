@@ -169,6 +169,7 @@ class VietnameseInputMethodService : InputMethodService(), LifecycleOwner, ViewM
         super.onStartInputView(info, restarting)
 
         inputProcessor.updateTypingMode(info)
+        inputProcessor.resetDeliveryMode()
 
         // Ensure owners are propagated to the decor and view tree members upon focus
         window?.window?.decorView?.let { decor ->
