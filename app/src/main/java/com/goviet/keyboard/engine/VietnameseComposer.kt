@@ -906,6 +906,14 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
     fun composingRawLength(): Int = processRaw.length
 
     /**
+     * Display length of the locked literal tail — the trailing characters the
+     * kernel accepted but can no longer re-interpret (a reverted Telex key, a
+     * rejected consonant). Zero while the whole buffer is one open syllable.
+     * See [ImeInputConnectionController.applyKeyToComposingBuffer].
+     */
+    fun literalTailLength(): Int = processState.rawSuffix.length
+
+    /**
      * Replaces the composing raw buffer (adoption / display-level edits).
      * When [composeAsVietnamese] is false the text is kept verbatim (word-edit literal
      * lock); otherwise it is resegmented through the Telex kernel.

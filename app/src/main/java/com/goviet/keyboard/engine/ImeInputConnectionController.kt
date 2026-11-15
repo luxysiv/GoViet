@@ -439,9 +439,53 @@ class ImeInputConnectionController(
             composingCursorIndex = 1
             return true
         }
+        splitLiteralTailAtCaret()
         inputEngine.insertComposingKey(composingCursorIndex, key)
         composingCursorIndex += 1
         return false
+    }
+
+    /**
+     * Detaches the locked literal tail sitting behind the caret so the syllable
+     * under it can be edited on its own.
+     *
+     * The kernel re-segments its WHOLE raw buffer on every keystroke, so a
+     * reverted Telex key stays in the raw and keeps shadowing the next one:
+     * "err" renders "er" (raw suffix "r"), and typing "s" between the "e" and
+     * the "r" inserts at raw index 1, producing "esrr" — which the kernel
+     * re-segments straight back to "er". The new key is swallowed by the
+     * cancelled "r" pair instead of applying to the "e".
+     *
+     * When the caret sits exactly on the boundary between the syllable and that
+     * locked tail, the syllable prefix is re-adopted as a FRESH composition and
+     * the tail is left committed in the editor, outside the managed range. The
+     * tail is then invisible to the kernel, so the next key transforms only the
+     * syllable ("er" → "é", editor "ér") and the "r" stays put.
+     *
+     * The split is deliberately narrow. It fires only while the caret is
+     * strictly inside the preedit AND the remainder is a locked tail
+     * ([VietnameseComposer.literalTailLength] > 0) that the syllable prefix can
+     * round-trip. A caret at the end of the preedit appends as before, and a
+     * preedit with no locked tail (e.g. "thấy") is never split — which is what
+     * keeps a mid-onset insert inside the same syllable.
+     */
+    private fun splitLiteralTailAtCaret() {
+        if (deliveryMode == DeliveryMode.TRANSIENT) return
+        if (isImmediateCommitMode()) return
+        if (!inputEngine.composeAsVietnamese) return
+        val rawLength = inputEngine.composingRawLength()
+        if (composingCursorIndex <= 0 || composingCursorIndex >= rawLength) return
+        val tailLength = inputEngine.literalTailLength()
+        if (tailLength <= 0) return
+        val display = lastSetComposingText ?: return
+        val syllableLength = display.length - tailLength
+        if (syllableLength <= 0) return
+        if (displayCursorIndex() != syllableLength) return
+        val prefix = display.substring(0, syllableLength)
+        val canonical = inputEngine.adoptRoundTrip(prefix) ?: return
+        inputEngine.setComposingRaw(canonical)
+        composingCursorIndex = canonical.length
+        lastSetComposingText = prefix
     }
 
     /**
