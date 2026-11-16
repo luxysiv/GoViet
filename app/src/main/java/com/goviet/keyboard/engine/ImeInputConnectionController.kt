@@ -719,9 +719,11 @@ class ImeInputConnectionController(
                     // The editor will not tell us. Treat the write as landed
                     // rather than guessing "ignored": if it did land, running
                     // diffRewrite on top of [previous] would corrupt correct
-                    // text. If it was ignored (the rare WebView case combined
-                    // with an unreadable cursor), the next rewrite that can read
-                    // state will recover.
+                    // text. Leave delivery mode uncommitted when unknown so a
+                    // later readable rewrite can re-probe. If replaceText was
+                    // actually ignored (rare: unreadable cursor + ignored
+                    // replaceText), a subsequent verifiable rewrite will detect
+                    // MISSING and recover via the transient path.
                     expectedEditorCaret = start + caretInDisplay
                     return
                 }
@@ -760,16 +762,23 @@ class ImeInputConnectionController(
             DeliveryMode.TRANSIENT -> backspaceHandler.sendBackspaceEvents(ic, count)
             DeliveryMode.RETAINS -> ic.deleteSurroundingText(count, 0)
             DeliveryMode.UNKNOWN -> {
-                // Decide once, by asking the editor whether the text we already
-                // delivered is really in front of the caret. A stale read here
-                // only means the field is treated as transient, which is safe:
-                // key-event deletes reach both kinds of editor.
-                if (verifyDelivery(ic, previous)) {
-                    deliveryMode = DeliveryMode.RETAINS
-                    ic.deleteSurroundingText(count, 0)
-                } else {
-                    deliveryMode = DeliveryMode.TRANSIENT
-                    backspaceHandler.sendBackspaceEvents(ic, count)
+                // Decide once from editor state when readable. If unreadable, do
+                // not lock the field into a guessed mode: key-event deletes are a
+                // safe cross-compatible removal when the caret is at the preedit
+                // end, and leaving the mode UNKNOWN lets a later verifiable write
+                // re-probe instead of cementing a wrong verdict.
+                when (checkDelivery(ic, previous)) {
+                    DeliveryCheck.LANDED -> {
+                        deliveryMode = DeliveryMode.RETAINS
+                        ic.deleteSurroundingText(count, 0)
+                    }
+                    DeliveryCheck.MISSING -> {
+                        deliveryMode = DeliveryMode.TRANSIENT
+                        backspaceHandler.sendBackspaceEvents(ic, count)
+                    }
+                    DeliveryCheck.UNREADABLE -> {
+                        backspaceHandler.sendBackspaceEvents(ic, count)
+                    }
                 }
             }
         }
@@ -1214,6 +1223,8 @@ class ImeInputConnectionController(
                                 DeliveryCheck.UNREADABLE -> {
                                     // Do not rewrite on top of text we cannot prove
                                     // is missing; assume the atomic replace landed.
+                                    // Keep mode unchanged so a later readable write
+                                    // can still establish the correct delivery mode.
                                 }
                             }
                         } else {
