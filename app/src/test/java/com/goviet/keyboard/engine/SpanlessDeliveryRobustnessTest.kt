@@ -85,6 +85,7 @@ class SpanlessDeliveryRobustnessTest {
     @Test
     fun unreadableEditor_replaceTextLands_rewriteIsNotCorrupted() {
         val editor = UnreadableButApplyingEditor(view)
+        engine.composeAsVietnamese = true
         editor.replaceText(0, 0, "ba", 1, null)
         editor.setSelection(2, 2)
 
@@ -104,12 +105,14 @@ class SpanlessDeliveryRobustnessTest {
     @Test
     fun unreadableEditor_unknownModeSuffixDeleteUsesSafeFallbackWithoutLockingTransient() {
         val editor = UnreadableSuffixDeleteEditor(view)
+        engine.composeAsVietnamese = true
         // No managed range: rewrite must go through diff path, where UNKNOWN +
         // unreadable delivery should not lock the field as TRANSIENT.
-        setRaw("ba", composingStart = -1)
+        editor.delivered.append("ban")
+        setRaw("bas", composingStart = -1)
         controller.lastSetComposingText = "ban"
 
-        controller.writePreedit(editor, "bá")
+        controller.writePreedit(editor, engine.toDisplayString())
 
         assertEquals("bá", editor.delivered.toString())
         assertEquals(ImeInputConnectionController.DeliveryMode.UNKNOWN, controller.deliveryMode)
@@ -118,6 +121,7 @@ class SpanlessDeliveryRobustnessTest {
     @Test
     fun retainingEditor_fastPathStaysRetainsAfterVerifiedRewrite() {
         val editor = BaseInputConnection(view, true)
+        engine.composeAsVietnamese = true
         setRaw("ba", composingStart = 0)
         controller.lastSetComposingText = "ba"
         controller.writePreedit(editor, "ba")
@@ -137,6 +141,7 @@ class SpanlessDeliveryRobustnessTest {
     @Test
     fun transientTerminal_longerPlainTypingNoDuplication() {
         val terminal = TransientTerminalEditor(view)
+        engine.composeAsVietnamese = true
         val keys = listOf("o", "op", "ope", "open", "openc", "openco", "opencod", "opencode")
         for (k in keys) {
             setRaw(k, composingStart = -1)
