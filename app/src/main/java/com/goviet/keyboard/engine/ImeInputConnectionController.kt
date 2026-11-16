@@ -108,6 +108,10 @@ class ImeInputConnectionController(
      */
     fun resetDeliveryMode() {
         deliveryMode = DeliveryMode.UNKNOWN
+        // A field change invalidates the echo the last write left behind: the
+        // caret position is meaningless in a different editor, and a stale match
+        // would make onUpdateSelection skip a real adoption or prefix scan.
+        expectedEditorCaret = -1
     }
 
     /**
@@ -690,22 +694,38 @@ class ImeInputConnectionController(
             start >= 0 &&
             ic.replaceText(start, start + previous.length, display, 1, null)) {
             // Already proven to land here, or proven right now on first use.
-            if (deliveryMode == DeliveryMode.RETAINS || verifyDelivery(ic, display)) {
-                deliveryMode = DeliveryMode.RETAINS
-                if (caretInDisplay != display.length) {
-                    // newCursorPosition = 1 always lands the caret after the
-                    // whole new text, so a preedit caret in the middle needs one
-                    // extra selection-only call: it changes no text, hence cannot
-                    // make the editor redraw the word.
-                    ic.setSelection(start + caretInDisplay, start + caretInDisplay)
+            val delivery = if (deliveryMode == DeliveryMode.RETAINS) DeliveryCheck.LANDED else checkDelivery(ic, display)
+            when (delivery) {
+                DeliveryCheck.LANDED -> {
+                    deliveryMode = DeliveryMode.RETAINS
+                    if (caretInDisplay != display.length) {
+                        // newCursorPosition = 1 always lands the caret after the
+                        // whole new text, so a preedit caret in the middle needs one
+                        // extra selection-only call: it changes no text, hence cannot
+                        // make the editor redraw the word.
+                        ic.setSelection(start + caretInDisplay, start + caretInDisplay)
+                    }
+                    expectedEditorCaret = start + caretInDisplay
+                    return
                 }
-                expectedEditorCaret = start + caretInDisplay
-                return
+                DeliveryCheck.MISSING -> {
+                    // replaceText reported success but the editor ignored it
+                    // (WebView). The old preedit is still in front of the caret,
+                    // so the diff below is measured from the right place — only
+                    // delivered the other way.
+                    deliveryMode = DeliveryMode.TRANSIENT
+                }
+                DeliveryCheck.UNREADABLE -> {
+                    // The editor will not tell us. Treat the write as landed
+                    // rather than guessing "ignored": if it did land, running
+                    // diffRewrite on top of [previous] would corrupt correct
+                    // text. If it was ignored (the rare WebView case combined
+                    // with an unreadable cursor), the next rewrite that can read
+                    // state will recover.
+                    expectedEditorCaret = start + caretInDisplay
+                    return
+                }
             }
-            // replaceText reported success but the editor ignored it (WebView).
-            // The old preedit is still in front of the caret, so the diff below
-            // is measured from the right place — only delivered the other way.
-            deliveryMode = DeliveryMode.TRANSIENT
         }
 
         diffRewrite(ic, display, previous, start, caretInDisplay)
@@ -755,18 +775,27 @@ class ImeInputConnectionController(
         }
     }
 
+    private enum class DeliveryCheck { LANDED, MISSING, UNREADABLE }
+
     /**
      * Asks the editor whether [expected] is the text right before the caret.
+     *
      * This is the only trustworthy answer to "did the write land": both
      * replaceText and deleteSurroundingText report success even when the editor
-     * ignored them, so a false here is treated as "this field is transient",
-     * which routes later removals through key events.
+     * ignored them. The result distinguishes "text is there", "text is not
+     * there", and "editor would not tell us" — the third case must not be read
+     * as "missing", because assuming a successful write was ignored would make
+     * the fallback rewrite corrupt text that is already correct.
      */
-    private fun verifyDelivery(ic: InputConnection, expected: String): Boolean {
-        if (expected.isEmpty()) return true
-        val before = ic.getTextBeforeCursor(expected.length, 0)?.toString() ?: return false
-        return before.endsWith(expected)
+    private fun checkDelivery(ic: InputConnection, expected: String): DeliveryCheck {
+        if (expected.isEmpty()) return DeliveryCheck.LANDED
+        val before = ic.getTextBeforeCursor(expected.length, 0)?.toString()
+            ?: return DeliveryCheck.UNREADABLE
+        return if (before.endsWith(expected)) DeliveryCheck.LANDED else DeliveryCheck.MISSING
     }
+
+    private fun verifyDelivery(ic: InputConnection, expected: String): Boolean =
+        checkDelivery(ic, expected) == DeliveryCheck.LANDED
 
     private fun commonPrefixLength(a: String, b: String): Int {
         val n = minOf(a.length, b.length)
@@ -1171,8 +1200,22 @@ class ImeInputConnectionController(
                         // here instead of silently keeping the unexpanded word.
                         val replaced = start >= 0 &&
                             ic.replaceText(start, start + preeditLen, outputText, 1, null)
-                        if (replaced && (deliveryMode == DeliveryMode.RETAINS || verifyDelivery(ic, outputText))) {
-                            deliveryMode = DeliveryMode.RETAINS
+                        if (replaced) {
+                            val delivery = if (deliveryMode == DeliveryMode.RETAINS) DeliveryCheck.LANDED else checkDelivery(ic, outputText)
+                            when (delivery) {
+                                DeliveryCheck.LANDED -> deliveryMode = DeliveryMode.RETAINS
+                                DeliveryCheck.MISSING -> {
+                                    deliveryMode = DeliveryMode.TRANSIENT
+                                    if (preeditLen > 0) {
+                                        backspaceHandler.sendBackspaceEvents(ic, preeditLen)
+                                    }
+                                    ic.commitText(outputText, 1)
+                                }
+                                DeliveryCheck.UNREADABLE -> {
+                                    // Do not rewrite on top of text we cannot prove
+                                    // is missing; assume the atomic replace landed.
+                                }
+                            }
                         } else {
                             deliveryMode = DeliveryMode.TRANSIENT
                             if (preeditLen > 0) {
