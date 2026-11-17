@@ -44,7 +44,7 @@ class LiteralTailSplitTest {
 
     /** One keystroke through the live path: buffer first, then the editor write. */
     private fun typeKey(editor: StatefulEditor, key: Char) {
-        controller.applyKeyToComposingBuffer(key)
+        controller.applyKeyToComposingBuffer(key, editor)
         controller.updateComposingUI(editor, 0, engine.toDisplayString())
     }
 

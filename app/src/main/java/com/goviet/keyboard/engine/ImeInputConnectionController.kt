@@ -414,7 +414,7 @@ class ImeInputConnectionController(
             composingCursorIndex = 1
             return true
         }
-        splitLiteralTailAtCaret()
+        splitLiteralTailAtCaret(ic)
         inputEngine.insertComposingKey(composingCursorIndex, key)
         composingCursorIndex += 1
         return false
@@ -444,7 +444,7 @@ class ImeInputConnectionController(
      * preedit with no locked tail (e.g. "thấy") is never split — which is what
      * keeps a mid-onset insert inside the same syllable.
      */
-    private fun splitLiteralTailAtCaret() {
+    private fun splitLiteralTailAtCaret(ic: InputConnection? = null) {
         if (isImmediateCommitMode()) return
         if (!inputEngine.composeAsVietnamese) return
         val rawLength = inputEngine.composingRawLength()
@@ -460,6 +460,10 @@ class ImeInputConnectionController(
         inputEngine.setComposingRaw(canonical)
         composingCursorIndex = canonical.length
         lastSetComposingText = prefix
+        // The locked tail stays in the editor as committed text. Shrink the
+        // composing span to the prefix so the next write cannot swallow it.
+        val start = composingStartInEditor
+        if (start >= 0) (ic ?: service.currentInputConnection)?.setComposingRegion(start, start + prefix.length)
     }
 
     /**
