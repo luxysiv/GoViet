@@ -1115,6 +1115,45 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
     fun adoptRoundTrip(display: String): String? =
         canonicalRawIfRoundTrips(adoptWord(display), display)
 
+    /**
+     * Retones a displayed syllable with Telex key [key] without splicing that
+     * key into the raw buffer at the caret.
+     *
+     * A tone is a PROPERTY OF THE SYLLABLE, not a character in the raw stream.
+     * Inserting 's' into the middle of the already-transformed raw "ddonsgf"
+     * (caret between "n" and "g" of "đồng") corrupts the kernel and leaks raw
+     * keys as literal text — "đosnosgf". Instead the syllable the user already
+     * sees is re-adopted to its canonical fold-first raw with the new tone, so
+     * only the tone changes and no raw key ever appears in the display.
+     *
+     * Returns false when the buffer is not one clean adoptable syllable (a
+     * locked literal tail, a multi-syllable fragment, ...); callers then fall
+     * back to the ordinary raw insertion.
+     */
+    fun retoneComposing(display: String, key: Char): Boolean {
+        if (!isComposing() || !composeAsVietnamese || !vietnameseModeEnabled) return false
+        if (display.isEmpty()) return false
+        val adopt = adoptWord(display) ?: return false
+        // Prefer the fold-first canonical raw: its raw boundaries line up with
+        // the displayed graphemes, so the caret can be mapped back exactly.
+        val canonical = adopt.canonicalRaw
+        if (process(canonical) != display) return false
+
+        val lower = key.lowercaseChar()
+        val targetTone = Tone.fromKey(lower) ?: return false
+        val toneKeyChar = canonical.lastOrNull()?.takeIf { isToneKey(it) }
+        val currentTone = toneKeyChar?.let { Tone.fromKey(it) ?: Tone.NONE } ?: Tone.NONE
+        val base = if (toneKeyChar != null) canonical.dropLast(1) else canonical
+        // Pressing the tone that is already on the syllable clears it, matching
+        // handleToneKey's untoggle rule.
+        val newRaw = if (targetTone == currentTone) base else base + key
+        if (newRaw.isEmpty() || newRaw == canonical) return false
+        val newDisplay = process(newRaw)
+        if (newDisplay.isEmpty() || adoptRoundTrip(newDisplay) == null) return false
+        setComposingRaw(newRaw)
+        return true
+    }
+
     fun process(raw: String): String {
         if (raw.isEmpty()) return ""
         compileRawInto(raw, true, stringOut)

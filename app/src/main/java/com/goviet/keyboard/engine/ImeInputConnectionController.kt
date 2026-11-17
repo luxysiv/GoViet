@@ -414,6 +414,28 @@ class ImeInputConnectionController(
             composingCursorIndex = 1
             return true
         }
+        // A tone key edits the SYLLABLE, not the raw stream at the caret.
+        // Splicing it into an already-transformed word is what produced
+        // "đosnosgf" from "đồng": a raw like "ddonsgf" has its early 's' folded
+        // into the vowel's shape, so a display→raw mapping fallback inserts the
+        // new 's' in the wrong slot. Retone from the displayed syllable instead
+        // so the word the user sees is kept and only its tone changes.
+        if (VietnameseComposer.isToneKey(key.lowercaseChar()) &&
+            inputEngine.isComposing() && inputEngine.composeAsVietnamese &&
+            composingCursorIndex > 0 && !isImmediateCommitMode()
+        ) {
+            val displayOffset = displayCursorIndex()
+            val display = lastSetComposingText ?: ""
+            if (display.isNotEmpty() && inputEngine.retoneComposing(display, key)) {
+                // lastSetComposingText is left for updateComposingUI to advance,
+                // as with every other buffer mutation.
+                composingCursorIndex = rawIndexOfDisplay(
+                    inputEngine.composingRaw(), compileComposingText(), displayOffset,
+                    inputEngine.composeAsVietnamese
+                )
+                return false
+            }
+        }
         splitLiteralTailAtCaret(ic)
         inputEngine.insertComposingKey(composingCursorIndex, key)
         composingCursorIndex += 1
@@ -948,17 +970,33 @@ class ImeInputConnectionController(
         if (displayOffset <= 0) return 0
         if (displayOffset >= display.length) return raw.length
         if (!vietnamese) return displayOffset.coerceAtMost(raw.length)
-        for (i in 0..raw.length) {
-            inputEngine.compileRawInto(raw, inputEngine.composeAsVietnamese, displayBuf, i)
-            if (displayPrefixMatches(displayBuf, display, displayOffset)) return i
+        // A raw prefix need not render exactly like the prefix of the final
+        // display: a tone key can change the vowel's shape ("ddons" renders
+        // "ốn" while the finished word shows "đồng"), and a fold-last raw
+        // keeps the fold key between the caret and the vowel it modifies. The
+        // raw index is therefore found in three passes, loosening the compare
+        // only when the stricter one finds nothing — never falling straight
+        // back to the display offset, which is wrong for multi-key syllables.
+        for (pass in 0..2) {
+            for (i in 0..raw.length) {
+                inputEngine.compileRawInto(raw, inputEngine.composeAsVietnamese, displayBuf, i)
+                if (displayPrefixMatches(displayBuf, display, displayOffset, pass)) return i
+            }
         }
         return displayOffset.coerceAtMost(raw.length)
     }
 
-    private fun displayPrefixMatches(buf: OwnedBuffer, display: String, len: Int): Boolean {
+    private fun displayPrefixMatches(buf: OwnedBuffer, display: String, len: Int, pass: Int): Boolean {
         if (buf.len != len) return false
         for (j in 0 until len) {
-            if (buf[j] != display[j]) return false
+            val a = buf[j]
+            val b = display[j]
+            val matches = when (pass) {
+                0 -> a == b
+                1 -> VietnameseUnicode.stripTone(a) == VietnameseUnicode.stripTone(b)
+                else -> VietnameseUnicode.stripDiacritics(a) == VietnameseUnicode.stripDiacritics(b)
+            }
+            if (!matches) return false
         }
         return true
     }

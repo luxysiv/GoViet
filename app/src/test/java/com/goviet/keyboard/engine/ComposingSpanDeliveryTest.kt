@@ -112,7 +112,7 @@ class ComposingSpanDeliveryTest {
 }
 
 /** Models a real Android editor: text commands work, composing spans are reported. */
-private class ComposingEditor(view: View) : BaseInputConnection(view, true) {
+internal class ComposingEditor(view: View) : BaseInputConnection(view, true) {
 
     val text = StringBuilder()
     private var caret = 0
