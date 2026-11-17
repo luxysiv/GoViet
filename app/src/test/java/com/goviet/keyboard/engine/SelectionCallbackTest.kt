@@ -81,7 +81,7 @@ class SelectionCallbackTest {
 
     @Test
     fun echoOfOurOwnWriteKeepsThePreeditAndAdoptsTheCaret() {
-        // "thấy" at [4, 8): our replaceText landed the caret at 8, which is
+        // "thấy" at [4, 8): our setComposingText landed the caret at 8, which is
         // exactly the echo the editor sends back a frame later.
         livePreedit("thấy", start = 4)
 

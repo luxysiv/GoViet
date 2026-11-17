@@ -32,7 +32,7 @@ internal enum class SelectionVerdict {
  *
  * The inputs are exactly the facts a write leaves behind: where the preedit we
  * own starts ([preeditStart], -1 when we own none) and how long it is
- * ([preeditLength]). Because every write is a single replaceText over exactly
+ * ([preeditLength]). Because every write is one setComposingText over exactly
  * that range, those two numbers are the editor's true state, which is why the
  * question "is this callback ours?" needs nothing else.
  *

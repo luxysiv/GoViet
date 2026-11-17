@@ -24,8 +24,8 @@ import org.robolectric.RobolectricTestRunner
  * already where that write put it. A callback that does not match keeps the old,
  * verified path: a live read, then adoption.
  *
- * The other two savings are pinned too: an unknown caret skips the word scan
- * before it reads any text, and a transient field never scans for a word at all.
+ * The other saving is pinned too: an unknown caret skips the word scan before it
+ * reads any text.
  */
 @RunWith(RobolectricTestRunner::class)
 class EditorCaretCacheTest {
@@ -100,25 +100,6 @@ class EditorCaretCacheTest {
         assertNull(word)
         assertEquals(0, editor.textBeforeCursorCalls)
         assertEquals(0, editor.textAfterCursorCalls)
-    }
-
-    @Test
-    fun aTransientFieldNeverScansForAWordToAdopt() {
-        val terminal = TransientTerminalEditor(view)
-        // Classify the field through the real path: a tone change needs a removal,
-        // and a transient terminal ignores the text command.
-        write(terminal, "ban")
-        write(terminal, "bans")
-        assertEquals(ImeInputConnectionController.DeliveryMode.TRANSIENT, controller.deliveryMode)
-        controller.clearState()
-        val readsBefore = terminal.textBeforeCursorCalls
-        val extractedBefore = terminal.extractedTextCalls
-
-        controller.adoptPrefixAtCaret(terminal)
-
-        // No caret read and no text read: the whole scan is skipped.
-        assertEquals(readsBefore, terminal.textBeforeCursorCalls)
-        assertEquals(extractedBefore, terminal.extractedTextCalls)
     }
 
     private fun write(ic: InputConnection, raw: String) {

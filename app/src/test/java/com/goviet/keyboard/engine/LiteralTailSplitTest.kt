@@ -59,6 +59,7 @@ class LiteralTailSplitTest {
         // The user taps between the "e" and the "r".
         controller.composingCursorIndex = 1
         val editor = StatefulEditor(view, "er")
+        editor.setComposingRegion(0, 2)
 
         // Acute tone on the "e" only; the tail must not swallow the key.
         typeKey(editor, 's')
@@ -83,6 +84,7 @@ class LiteralTailSplitTest {
         controller.lastSetComposingText = "er"
         controller.composingCursorIndex = engine.composingRawLength()
         val editor = StatefulEditor(view, "er")
+        editor.setComposingRegion(0, 2)
 
         // No split at the end: the locked tail stays in the buffer and the key
         // is appended to it literally, exactly as before the fix.
@@ -93,13 +95,15 @@ class LiteralTailSplitTest {
 }
 
 /**
- * A minimal editor that really applies text commands, so a test can assert on
- * the visible text after a preedit write instead of on the IME's own bookkeeping.
+ * A minimal editor that honours the composing-span contract, so a test can assert
+ * on the visible text after a preedit write instead of on the IME's bookkeeping.
  */
 private class StatefulEditor(view: View, initialText: String) : BaseInputConnection(view, true) {
 
     val text = StringBuilder(initialText)
     private var caret = initialText.length
+    private var composingStart = -1
+    private var composingEnd = -1
 
     override fun getTextBeforeCursor(n: Int, flags: Int): CharSequence =
         text.substring(maxOf(0, caret - n), caret)
@@ -107,9 +111,35 @@ private class StatefulEditor(view: View, initialText: String) : BaseInputConnect
     override fun getTextAfterCursor(n: Int, flags: Int): CharSequence =
         text.substring(caret, minOf(text.length, caret + n))
 
+    override fun getExtractedText(request: android.view.inputmethod.ExtractedTextRequest, flags: Int): android.view.inputmethod.ExtractedText =
+        android.view.inputmethod.ExtractedText().apply { this.text = this@StatefulEditor.text; selectionStart = caret; selectionEnd = caret }
+
+    override fun setComposingText(text: CharSequence, newCursorPosition: Int): Boolean {
+        val start = if (composingStart >= 0 && composingEnd >= composingStart) composingStart else caret
+        val end = if (composingStart >= 0 && composingEnd >= composingStart) composingEnd else caret
+        this.text.replace(start, end, text.toString())
+        caret = start + text.length + (newCursorPosition - 1)
+        composingStart = start
+        composingEnd = start + text.length
+        return true
+    }
+
+    override fun setComposingRegion(start: Int, end: Int): Boolean {
+        composingStart = start
+        composingEnd = end
+        return true
+    }
+
+    override fun finishComposingText(): Boolean {
+        composingStart = -1
+        composingEnd = -1
+        return true
+    }
+
     override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
+        finishComposingText()
         this.text.insert(caret, text)
-        caret += text.length
+        caret += text.length + (newCursorPosition - 1)
         return true
     }
 
@@ -120,8 +150,9 @@ private class StatefulEditor(view: View, initialText: String) : BaseInputConnect
         newCursorPosition: Int,
         textAttribute: TextAttribute?
     ): Boolean {
+        finishComposingText()
         this.text.replace(start, end, text.toString())
-        caret = start + text.length
+        caret = start + text.length + (newCursorPosition - 1)
         return true
     }
 

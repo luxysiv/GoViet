@@ -73,9 +73,8 @@ class VietnameseInputMethodService : InputMethodService(), LifecycleOwner, ViewM
     private fun applyInputMethod(index: Int) {
         currentInputMethodIndex.value = index
         _languageMode.value = if (index == 0) "VIE" else "ENG"
+        // clearState ends the composing span, leaving its text in the editor.
         inputProcessor.clearState()
-        // No finishComposingText(): the preedit is written with replaceText, which
-        // never creates a composing span, so there is no composing region to close.
     }
 
     fun toggleLanguage() {
@@ -169,7 +168,7 @@ class VietnameseInputMethodService : InputMethodService(), LifecycleOwner, ViewM
         super.onStartInputView(info, restarting)
 
         inputProcessor.updateTypingMode(info)
-        inputProcessor.resetDeliveryMode()
+        inputProcessor.resetEditorSession()
 
         // Ensure owners are propagated to the decor and view tree members upon focus
         window?.window?.decorView?.let { decor ->

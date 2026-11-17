@@ -31,29 +31,6 @@ class ImeInputConnectionController(
     var typingMode: TypingMode = TypingMode.VIETNAMESE
         private set
 
-    /**
-     * How an editor accepts the removal half of a preedit rewrite.
-     *
-     * Decided once per field, and only ever from the editor's own text — never
-     * from the return value of a write. replaceText reports success even when
-     * the editor silently ignored it (Chromium's WebView does exactly this), so
-     * "the write landed" is a fact to be verified, not a boolean to be trusted.
-     */
-    enum class DeliveryMode {
-        /** Not decided yet: the first rewrite that has to remove something decides. */
-        UNKNOWN,
-
-        /** The editor keeps the preedit between writes; deleteSurroundingText reaches it. */
-        RETAINS,
-
-        /**
-         * The editor forwards the preedit and drops it on every write — a web
-         * terminal whose hidden field is cleared after each keystroke. Deletions
-         * there have to travel as key events, not text commands.
-         */
-        TRANSIENT,
-    }
-
     fun updateTypingMode(editorInfo: android.view.inputmethod.EditorInfo?) {
         if (editorInfo == null) {
             typingMode = TypingMode.VIETNAMESE
@@ -85,6 +62,9 @@ class ImeInputConnectionController(
     var composingStartInEditor = -1
     var composingCursorIndex = 0
 
+    /** True while the editor carries a composing region created by us. */
+    private var composingSpanActive = false
+
     /**
      * The caret our own last editor write left behind, or -1 when that write
      * could not know it (no managed range). It answers one cheap question in
@@ -97,34 +77,18 @@ class ImeInputConnectionController(
      */
     private var expectedEditorCaret = -1
 
-    /** Which removal mechanism this field honours; see [DeliveryMode]. */
-    var deliveryMode: DeliveryMode = DeliveryMode.UNKNOWN
-        private set
-
     /**
-     * A new field may be a different kind of editor, so the previous verdict is
-     * forgotten. Called when the input view starts for a field, not on every
-     * state reset: the verdict survives a commit/space because the field does.
+     * A new field is a new editor session: its caret has no relation to the last
+     * write's echo and any composing region we tracked belongs to the old field.
      */
-    fun resetDeliveryMode() {
-        deliveryMode = DeliveryMode.UNKNOWN
-        // A field change invalidates the echo the last write left behind: the
-        // caret position is meaningless in a different editor, and a stale match
-        // would make onUpdateSelection skip a real adoption or prefix scan.
+    fun resetEditorSession() {
         expectedEditorCaret = -1
+        composingSpanActive = false
+        composingStartInEditor = -1
     }
 
-    /**
-     * True when deletions must travel as key events rather than text commands.
-     *
-     * TYPE_NULL terminals always needed this. Transient web fields (a browser
-     * terminal whose hidden textarea is cleared after every keystroke) need it
-     * too, and they are NOT TYPE_NULL — which is exactly why the old code
-     * duplicated characters there: its text-command deletes never reached the
-     * app, so each write re-emitted the whole word.
-     */
-    fun usesKeyEventDeletes(): Boolean =
-        isImmediateCommitMode() || deliveryMode == DeliveryMode.TRANSIENT
+    /** TYPE_NULL fields commit key by key; every real text field uses spans. */
+    fun usesKeyEventDeletes(): Boolean = isImmediateCommitMode()
 
     /**
      * "Is this onUpdateSelection ours?" is answered by GEOMETRY, not by a ledger of
@@ -133,7 +97,7 @@ class ImeInputConnectionController(
      * itself lives in [reconcileSelection], which sees only these fields:
      *
      *  - [composingStartInEditor] + [lastSetComposingText] delimit the preedit we
-     *    own, and every write is one replaceText over exactly that range, so the
+     *    own, and every write is one setComposingText over exactly that range, so the
      *    bounds are exact without the editor ever reporting a composing region.
      *
      * A caret inside that range is either the echo of our own write or the user
@@ -176,12 +140,20 @@ class ImeInputConnectionController(
         newSelStart: Int, newSelEnd: Int,
         candidatesStart: Int, candidatesEnd: Int
     ) {
+        // With a composing span, the editor reports the range itself. That range
+        // is authoritative: use it instead of our tracked guess so the echo of a
+        // setComposingText is not mistaken for a user tap outside a stale range.
+        val candidatesValid = composingSpanActive &&
+            candidatesStart >= 0 && candidatesEnd >= candidatesStart
+        val preeditStart = if (candidatesValid) candidatesStart else composingStartInEditor
+        val preeditLength = if (candidatesValid) candidatesEnd - candidatesStart else lastSetComposingText?.length ?: 0
+
         val verdict = reconcileSelection(
             newSelStart = newSelStart,
             newSelEnd = newSelEnd,
             composing = inputEngine.isComposing(),
-            preeditStart = composingStartInEditor,
-            preeditLength = lastSetComposingText?.length ?: 0
+            preeditStart = preeditStart,
+            preeditLength = preeditLength
         )
 
         when (verdict) {
@@ -194,19 +166,12 @@ class ImeInputConnectionController(
             SelectionVerdict.KEEP_PREEDIT -> {
                 userMovedCursor = false
                 userSelectedText = false
-                // A transient field has no stable caret to adopt: its hidden text
-                // is drained and cleared after every keystroke, so the position the
-                // editor reports describes text we never wrote. Adopting it would
-                // move the engine cursor into the wrong place and re-order the next
-                // keystroke. The engine cursor is the only one that means anything
-                // there, so it is left alone.
-                //
-                // The echo of our own write needs no adoption either: it carries
-                // exactly the caret that write produced, so the engine cursor is
-                // already right and asking the editor where its caret is would be a
-                // blocking round-trip that can only confirm it. Only a caret that
-                // differs from what we wrote can be a real tap inside the word.
-                if (deliveryMode != DeliveryMode.TRANSIENT && newSelStart != expectedEditorCaret) {
+                if (candidatesValid) composingStartInEditor = candidatesStart
+                // The echo of our own write carries exactly the caret that write
+                // produced, so the engine cursor is already right and a blocking
+                // caret read can be skipped. Any other position is a real tap
+                // inside the word and must be adopted.
+                if (newSelStart != expectedEditorCaret) {
                     adoptCaretIntoPreedit(newSelStart)
                 }
                 return
@@ -215,15 +180,9 @@ class ImeInputConnectionController(
             SelectionVerdict.USER_MOVE, SelectionVerdict.USER_SELECTION -> {
                 userMovedCursor = true
                 userSelectedText = verdict == SelectionVerdict.USER_SELECTION
-                // A transient field reports the caret of an emptied editor, so an
-                // apparent move is not evidence the user left the word; dropping
-                // the buffer on it would lose a half-typed word. A genuine
-                // selection is still honoured, because selecting text is the one
-                // move a terminal forwards as such.
-                if (inputEngine.isComposing() && (deliveryMode != DeliveryMode.TRANSIENT || verdict == SelectionVerdict.USER_SELECTION)) {
-                    // No finishComposingText(): the preedit is written with
-                    // replaceText, which never creates a composing span, so there
-                    // is nothing to finish. The tracked range dies with the buffer.
+                if (inputEngine.isComposing()) {
+                    // clearState finishes the composing span: the word the user
+                    // moved away from must not stay underlined.
                     clearState()
                 }
             }
@@ -284,10 +243,6 @@ class ImeInputConnectionController(
      * or vowel modifier before taking the word over.
      */
     fun adoptPrefixAtCaret(ic: InputConnection) {
-        // A transient field is drained after every keystroke: there is no committed
-        // word to read and no caret that describes one, so the scan could only cost
-        // a blocking round-trip and adopt text that is not there.
-        if (deliveryMode == DeliveryMode.TRANSIENT) return
         if (inputEngine.isComposing()) return
         if (userSelectedText) return
         if (service._languageMode.value == "ENG" || isBypassVietnameseComposing()) return
@@ -308,10 +263,9 @@ class ImeInputConnectionController(
         inputEngine.setComposingRaw(canonical)
         composingCursorIndex = canonical.length
         lastSetComposingText = prefix
-        // The editor caret is already exactly where the preedit ends, and no
-        // composing region is announced (the preedit carries no span, so no
-        // underline can appear over freshly adopted words), so adoption needs
-        // no editor call at all.
+        // Take ownership of the existing characters without rewriting them: the
+        // editor will now report this range as the composing region.
+        markComposingRegion(ic, word.startInEditor, prefix.length)
         expectedEditorCaret = word.startInEditor + prefix.length
         userMovedCursor = false
     }
@@ -326,7 +280,21 @@ class ImeInputConnectionController(
         }
     }
 
-    fun clearState() {
+    /** Ends our composing region without touching the text it contains. */
+    private fun finishComposingSpan(ic: InputConnection) {
+        if (!composingSpanActive) return
+        ic.finishComposingText()
+        composingSpanActive = false
+    }
+
+    /**
+     * [finishSpan] is false only from the commit path, which needs to replace or
+     * finish the region itself after the engine state has been cleared.
+     */
+    fun clearState(ic: InputConnection? = null, finishSpan: Boolean = true) {
+        if (finishSpan) {
+            (ic ?: service.currentInputConnection)?.let { finishComposingSpan(it) }
+        }
         inputEngine.reset()
         lastSetComposingText = null
         lastKeyPressTime = 0L
@@ -433,8 +401,11 @@ class ImeInputConnectionController(
      * whose range is empty here). Every keystroke therefore transforms only the
      * syllable under the caret and never its neighbours.
      */
-    internal fun applyKeyToComposingBuffer(key: Char): Boolean {
+    internal fun applyKeyToComposingBuffer(key: Char, ic: InputConnection? = null): Boolean {
         if (inputEngine.isComposing() && composingCursorIndex <= 0 && inputEngine.composingRawLength() > 0) {
+            // The old syllable stays in the editor, but its span must end before a
+            // new syllable is inserted at the caret.
+            (ic ?: service.currentInputConnection)?.let { finishComposingSpan(it) }
             inputEngine.reset()
             inputEngine.composeAsVietnamese = true
             composingCursorIndex = 0
@@ -474,7 +445,6 @@ class ImeInputConnectionController(
      * keeps a mid-onset insert inside the same syllable.
      */
     private fun splitLiteralTailAtCaret() {
-        if (deliveryMode == DeliveryMode.TRANSIENT) return
         if (isImmediateCommitMode()) return
         if (!inputEngine.composeAsVietnamese) return
         val rawLength = inputEngine.composingRawLength()
@@ -493,26 +463,27 @@ class ImeInputConnectionController(
     }
 
     /**
+     * Marks already committed text as composing instead of rewriting it. This is
+     * what a span-based IME is for: the editor keeps the characters, we only take
+     * ownership of the range so the next Telex key can diff it.
+     */
+    private fun markComposingRegion(ic: InputConnection, start: Int, length: Int) {
+        if (start < 0 || length <= 0) return
+        composingStartInEditor = start
+        ic.setComposingRegion(start, start + length)
+        composingSpanActive = true
+    }
+
+    /**
      * Dedicated cursor→engine bridge: decides how a fresh keystroke starts a composition
      * session relative to existing committed text at the editor caret.
      */
     private fun resolveCompositionAtCursor(
+        ic: InputConnection,
         key: String,
         wordAtCursor: WordAtCursor?,
         caret: Int
     ) {
-        // A transient field is drained after every keystroke: its text is not
-        // there to adopt and its caret does not describe a word, so the syllable
-        // starts clean and the preedit is written as a plain insertion.
-        if (deliveryMode == DeliveryMode.TRANSIENT) {
-            composingStartInEditor = -1
-            composingCursorIndex = 0
-            inputEngine.composeAsVietnamese = true
-            userMovedCursor = false
-            expectedEditorCaret = -1
-            return
-        }
-
         // -1 when the editor will not say: no managed range is claimed, so the
         // preedit is written as a plain insertion at the editor's own caret.
         composingStartInEditor = caret
@@ -562,6 +533,7 @@ class ImeInputConnectionController(
             inputEngine.setComposingRaw(canonicalRaw)
             composingCursorIndex = canonicalRaw.length
             lastSetComposingText = adoptTarget
+            markComposingRegion(ic, wordAtCursor.startInEditor, adoptTarget.length)
             userMovedCursor = false
             return
         }
@@ -573,6 +545,7 @@ class ImeInputConnectionController(
             inputEngine.setComposingRaw(wordText)
             composingCursorIndex = wordText.length
             lastSetComposingText = wordText
+            markComposingRegion(ic, wordAtCursor.startInEditor, wordText.length)
             userMovedCursor = false
             return
         }
@@ -582,6 +555,7 @@ class ImeInputConnectionController(
             inputEngine.setComposingRaw(wordText)
             composingCursorIndex = wordText.length
             lastSetComposingText = wordText
+            markComposingRegion(ic, wordAtCursor.startInEditor, wordText.length)
             userMovedCursor = false
             return
         }
@@ -592,7 +566,7 @@ class ImeInputConnectionController(
     }
 
     /**
-     * The one deliberate exception to "every edit is a replaceText": TYPE_NULL
+     * The one deliberate exception to "every edit is a composing span": TYPE_NULL
      * fields (terminal-style / hardware-key inputs) have no text of their own to
      * preedit, so they get committed key by key with backspace key events instead
      * of a managed range. It is a field-type decision, not a legacy-Android
@@ -629,18 +603,16 @@ class ImeInputConnectionController(
             if (backspaceCountIfImmediate > 0) {
                 backspaceHandler.sendBackspaceEvents(ic, backspaceCountIfImmediate)
             }
-        } else if (deliveryMode == DeliveryMode.TRANSIENT) {
-            // The word was forwarded to the app as it was typed, so it leaves
-            // through the app's own delete key rather than a text command.
-            if (lastStr.isNotEmpty()) backspaceHandler.sendBackspaceEvents(ic, lastStr.length)
-        } else if (lastStr.isNotEmpty()) {
-            // Both callers — delete-word and backspace-to-empty — mean "drop the
-            // whole preedit". The range is known exactly, so the preedit leaves
-            // in ONE atomic op: no caret parking, no delete-at-caret guesswork.
-            if (start < 0 || !ic.replaceText(start, start + lastStr.length, "", 1, null)) {
-                if (start >= 0) ic.setSelection(start + lastStr.length, start + lastStr.length)
-                ic.deleteSurroundingText(lastStr.length, 0)
-            }
+        } else if (composingSpanActive) {
+            // Emptying the composing region removes exactly the text we own, then
+            // finish leaves the editor with the caret where the preedit began.
+            ic.setComposingText("", 1)
+            ic.finishComposingText()
+            composingSpanActive = false
+        } else if (lastStr.isNotEmpty() && start >= 0) {
+            // Defensive fallback for a preedit whose span was never established.
+            ic.setSelection(start + lastStr.length, start + lastStr.length)
+            ic.deleteSurroundingText(lastStr.length, 0)
         }
         // The preedit is gone and the caret sits where it began, so the echo of
         // this delete needs no read either.
@@ -648,170 +620,35 @@ class ImeInputConnectionController(
     }
 
     /**
-     * Writes the preedit to the editor as the minimal edit against what was
-     * already delivered, in the one order that is correct on every editor.
-     *
-     * The common case — the new display is the old one plus a tail, caret at the
-     * end — commits ONLY the tail. That is the single write that is correct
-     * everywhere: a normal editor appends at the caret, while a transient field
-     * (a web terminal whose hidden textarea was already forwarded and cleared)
-     * has nothing left to replace, so re-committing the whole word would deliver
-     * it twice — the "nhân chữ" duplication. A tail is always new text, so it
-     * lands exactly once in both.
-     *
-     * Only when something inside the preedit changed (a tone mark, a vowel fold,
-     * a backspace, a caret moved into the word) does a removal become necessary.
-     * [diffRewrite] then deletes just the changed suffix through the mechanism
-     * the editor actually honours, chosen once by [DeliveryMode]. replaceText is
-     * tried first because it is atomic and leaves no frame in which the word is
-     * missing (the old Zalo/Telegram flicker), but its success is verified
-     * against the editor's text, not trusted: it returns true even when ignored.
-     *
-     * [lastSetComposingText] stays the single owner of the preedit bookkeeping:
-     * it holds what the editor was given, is read here as the previous delivery,
-     * and is replaced before the editor is touched, so the echo reconciliation
-     * in [onUpdateSelection] stays provable.
+     * Standard Android IME write path. The editor owns the diff inside the
+     * composing region, so there is no read-back, no verdict to stick and no
+     * fallback delete that a rich web editor could ignore.
      */
-    fun writePreedit(ic: InputConnection, display: String) {
+    private fun writeComposingPreedit(ic: InputConnection, display: String) {
         val previous = lastSetComposingText ?: ""
-        val start = composingStartInEditor
+        var start = composingStartInEditor
         val caretInDisplay = displayCursorIndex()
         lastSetComposingText = display
 
-        // Fast path: a pure extension at the end of the preedit needs no removal.
-        if (caretInDisplay == display.length &&
-            display.length >= previous.length &&
-            display.startsWith(previous)) {
-            val tail = display.substring(previous.length)
-            if (tail.isNotEmpty()) ic.commitText(tail, 1)
-            // The commit lands the caret right after the preedit it extended, so
-            // the echo of this write can be recognised without a read.
-            expectedEditorCaret = if (start >= 0) start + display.length else -1
-            return
+        if (start < 0) {
+            // We own no range yet. The caret is where this text is about to be
+            // inserted (or where the previous delivery ended), so one read at
+            // this boundary is enough to make cursor/adopt logic exact later.
+            val caret = realSelectionStart(ic)
+            if (caret >= 0) start = caret - previous.length
+            composingStartInEditor = start
         }
 
-        if (deliveryMode != DeliveryMode.TRANSIENT &&
-            start >= 0 &&
-            ic.replaceText(start, start + previous.length, display, 1, null)) {
-            // Already proven to land here, or proven right now on first use.
-            val delivery = if (deliveryMode == DeliveryMode.RETAINS) DeliveryCheck.LANDED else checkDelivery(ic, display)
-            when (delivery) {
-                DeliveryCheck.LANDED -> {
-                    deliveryMode = DeliveryMode.RETAINS
-                    if (caretInDisplay != display.length) {
-                        // newCursorPosition = 1 always lands the caret after the
-                        // whole new text, so a preedit caret in the middle needs one
-                        // extra selection-only call: it changes no text, hence cannot
-                        // make the editor redraw the word.
-                        ic.setSelection(start + caretInDisplay, start + caretInDisplay)
-                    }
-                    expectedEditorCaret = start + caretInDisplay
-                    return
-                }
-                DeliveryCheck.MISSING -> {
-                    // replaceText reported success but the editor ignored it
-                    // (WebView). The old preedit is still in front of the caret,
-                    // so the diff below is measured from the right place — only
-                    // delivered the other way.
-                    deliveryMode = DeliveryMode.TRANSIENT
-                }
-                DeliveryCheck.UNREADABLE -> {
-                    // The editor will not tell us. Treat the write as landed
-                    // rather than guessing "ignored": if it did land, running
-                    // diffRewrite on top of [previous] would corrupt correct
-                    // text. Leave delivery mode uncommitted when unknown so a
-                    // later readable rewrite can re-probe. If replaceText was
-                    // actually ignored (rare: unreadable cursor + ignored
-                    // replaceText), a subsequent verifiable rewrite will detect
-                    // MISSING and recover via the transient path.
-                    expectedEditorCaret = start + caretInDisplay
-                    return
-                }
-            }
-        }
-
-        diffRewrite(ic, display, previous, start, caretInDisplay)
-    }
-
-    /**
-     * Deletes only the changed suffix of the delivered preedit and commits the
-     * new tail. Used for transient fields and for editors that do not implement
-     * replaceText (Flutter's TextInputConnection and other hand-rolled
-     * connections); the removal mechanism is chosen by [deletePreeditSuffix].
-     */
-    private fun diffRewrite(
-        ic: InputConnection,
-        display: String,
-        previous: String,
-        start: Int,
-        caretInDisplay: Int
-    ) {
-        val prefix = commonPrefixLength(previous, display)
-        val deleteCount = previous.length - prefix
-        if (deleteCount > 0) deletePreeditSuffix(ic, previous, deleteCount)
-        val insert = display.substring(prefix)
-        if (insert.isNotEmpty()) ic.commitText(insert, 1)
+        ic.setComposingText(display, 1)
+        composingSpanActive = display.isNotEmpty()
         if (start >= 0 && caretInDisplay != display.length) {
             ic.setSelection(start + caretInDisplay, start + caretInDisplay)
         }
         expectedEditorCaret = if (start >= 0) start + caretInDisplay else -1
     }
 
-    private fun deletePreeditSuffix(ic: InputConnection, previous: String, count: Int) {
-        when (deliveryMode) {
-            DeliveryMode.TRANSIENT -> backspaceHandler.sendBackspaceEvents(ic, count)
-            DeliveryMode.RETAINS -> ic.deleteSurroundingText(count, 0)
-            DeliveryMode.UNKNOWN -> {
-                // Decide once from editor state when readable. If unreadable, do
-                // not lock the field into a guessed mode: key-event deletes are a
-                // safe cross-compatible removal when the caret is at the preedit
-                // end, and leaving the mode UNKNOWN lets a later verifiable write
-                // re-probe instead of cementing a wrong verdict.
-                when (checkDelivery(ic, previous)) {
-                    DeliveryCheck.LANDED -> {
-                        deliveryMode = DeliveryMode.RETAINS
-                        ic.deleteSurroundingText(count, 0)
-                    }
-                    DeliveryCheck.MISSING -> {
-                        deliveryMode = DeliveryMode.TRANSIENT
-                        backspaceHandler.sendBackspaceEvents(ic, count)
-                    }
-                    DeliveryCheck.UNREADABLE -> {
-                        backspaceHandler.sendBackspaceEvents(ic, count)
-                    }
-                }
-            }
-        }
-    }
-
-    private enum class DeliveryCheck { LANDED, MISSING, UNREADABLE }
-
-    /**
-     * Asks the editor whether [expected] is the text right before the caret.
-     *
-     * This is the only trustworthy answer to "did the write land": both
-     * replaceText and deleteSurroundingText report success even when the editor
-     * ignored them. The result distinguishes "text is there", "text is not
-     * there", and "editor would not tell us" — the third case must not be read
-     * as "missing", because assuming a successful write was ignored would make
-     * the fallback rewrite corrupt text that is already correct.
-     */
-    private fun checkDelivery(ic: InputConnection, expected: String): DeliveryCheck {
-        if (expected.isEmpty()) return DeliveryCheck.LANDED
-        val before = ic.getTextBeforeCursor(expected.length, 0)?.toString()
-            ?: return DeliveryCheck.UNREADABLE
-        return if (before.endsWith(expected)) DeliveryCheck.LANDED else DeliveryCheck.MISSING
-    }
-
-    private fun verifyDelivery(ic: InputConnection, expected: String): Boolean =
-        checkDelivery(ic, expected) == DeliveryCheck.LANDED
-
-    private fun commonPrefixLength(a: String, b: String): Int {
-        val n = minOf(a.length, b.length)
-        var i = 0
-        while (i < n && a[i] == b[i]) i++
-        return i
-    }
+    /** The only preedit write path: Android's composing-span contract. */
+    fun writePreedit(ic: InputConnection, display: String) = writeComposingPreedit(ic, display)
 
     /**
      * Claims a managed range for a preedit that was written as a plain insertion
@@ -982,19 +819,13 @@ class ImeInputConnectionController(
                             clearState()
                         }
                         if (!inputEngine.isComposing()) {
-                            if (deliveryMode == DeliveryMode.TRANSIENT) {
-                                // No committed text to read and no caret that
-                                // describes a word: skip the scan entirely.
-                                resolveCompositionAtCursor(actualKey, null, -1)
-                            } else {
-                                // One caret read, shared by the word scan and the
-                                // resolver — the resolver used to ask again.
-                                val caret = realSelectionStart(ic)
-                                resolveCompositionAtCursor(actualKey, findWordAroundCursor(ic, caret), caret)
-                            }
+                            // One caret read, shared by the word scan and the
+                            // resolver — the resolver used to ask again.
+                            val caret = realSelectionStart(ic)
+                            resolveCompositionAtCursor(ic, actualKey, findWordAroundCursor(ic, caret), caret)
                         }
                         val lastLen = lastSetComposingText?.length ?: 0
-                        applyKeyToComposingBuffer(actualKey[0])
+                        applyKeyToComposingBuffer(actualKey[0], ic)
 
                         val casedDisplay = if (inputEngine.composeAsVietnamese) {
                             inputEngine.toDisplayString()
@@ -1163,99 +994,65 @@ class ImeInputConnectionController(
      * extra binder round-trips to the editor and buys no extra atomicity.
      */
     fun commitAndReset(wordBreak: String = "", alreadyBatched: Boolean = false) {
-        if (inputEngine.isComposing()) {
-            val ic = service.currentInputConnection
-            if (ic != null) {
-                if (!alreadyBatched) ic.beginBatchEdit()
-                try {
-                    val raw = inputEngine.composingRaw().toString()
-                    val macroExpanded = tryExpandMacro(raw, wordBreak)
-                    val outputText = macroExpanded ?: (if (!inputEngine.composeAsVietnamese) raw + wordBreak else compileRawDisplay() + wordBreak)
-                    val start = composingStartInEditor
-                    val preeditLen = lastSetComposingText?.length ?: 0
-                    val immediate = isImmediateCommitMode()
-                    // Local state first: the engine and the tracked range describe
-                    // exactly what the editor is about to be given before a single
-                    // editor call is made.
-                    recordImeCommit(outputText.trim())
-                    val expanded = macroExpanded
-                    clearState()
+        commitAndResetTo(service.currentInputConnection, wordBreak, alreadyBatched)
+    }
 
-                    if (immediate) {
-                        if (preeditLen > 0) {
-                            backspaceHandler.sendBackspaceEvents(ic, preeditLen)
-                        }
-                        ic.commitText(outputText, 1)
-                    } else if (deliveryMode == DeliveryMode.TRANSIENT) {
-                        // The word reached the app as it was typed, so on a plain
-                        // commit only the separator is new. A macro has to retract
-                        // the delivered word through the app's own delete key and
-                        // type the expansion in its place.
-                        if (macroExpanded != null) {
-                            if (preeditLen > 0) {
-                                backspaceHandler.sendBackspaceEvents(ic, preeditLen)
-                            }
-                            ic.commitText(outputText, 1)
-                        } else if (wordBreak.isNotEmpty()) {
-                            ic.commitText(wordBreak, 1)
-                        }
-                    } else if (macroExpanded != null) {
-                        // Macro expansion replaces the whole preedit range in one
-                        // atomic op, so the word never blinks between the old and
-                        // the expanded text. The write is verified the same way a
-                        // keystroke's is: replaceText reports success even when the
-                        // editor ignored it, so a field that never needed a rewrite
-                        // until now (a terminal typed in plain letters) is detected
-                        // here instead of silently keeping the unexpanded word.
-                        val replaced = start >= 0 &&
-                            ic.replaceText(start, start + preeditLen, outputText, 1, null)
-                        if (replaced) {
-                            val delivery = if (deliveryMode == DeliveryMode.RETAINS) DeliveryCheck.LANDED else checkDelivery(ic, outputText)
-                            when (delivery) {
-                                DeliveryCheck.LANDED -> deliveryMode = DeliveryMode.RETAINS
-                                DeliveryCheck.MISSING -> {
-                                    deliveryMode = DeliveryMode.TRANSIENT
-                                    if (preeditLen > 0) {
-                                        backspaceHandler.sendBackspaceEvents(ic, preeditLen)
-                                    }
-                                    ic.commitText(outputText, 1)
-                                }
-                                DeliveryCheck.UNREADABLE -> {
-                                    // Do not rewrite on top of text we cannot prove
-                                    // is missing; assume the atomic replace landed.
-                                    // Keep mode unchanged so a later readable write
-                                    // can still establish the correct delivery mode.
-                                }
-                            }
-                        } else {
-                            deliveryMode = DeliveryMode.TRANSIENT
-                            if (preeditLen > 0) {
-                                backspaceHandler.sendBackspaceEvents(ic, preeditLen)
-                            }
-                            ic.commitText(outputText, 1)
-                        }
-                    } else if (wordBreak.isNotEmpty()) {
-                        // The preedit text is already committed; only the separator
-                        // is new. No finishComposingText: the preedit carries no
-                        // composing span, so there is nothing to finish.
-                        ic.commitText(wordBreak, 1)
+    /** Exposed for tests that own their InputConnection rather than the service's. */
+    internal fun commitAndResetTo(ic: InputConnection?, wordBreak: String, alreadyBatched: Boolean) {
+        if (!inputEngine.isComposing()) return
+        if (ic == null) {
+            clearState()
+            return
+        }
+        if (!alreadyBatched) ic.beginBatchEdit()
+        try {
+            val raw = inputEngine.composingRaw().toString()
+            val macroExpanded = tryExpandMacro(raw, wordBreak)
+            val outputText = macroExpanded
+                ?: (if (!inputEngine.composeAsVietnamese) raw + wordBreak else compileRawDisplay() + wordBreak)
+            val start = composingStartInEditor
+            val preeditLen = lastSetComposingText?.length ?: 0
+            val immediate = isImmediateCommitMode()
+
+            recordImeCommit(outputText.trim())
+            val expanded = macroExpanded
+            // The engine is cleared first; the span is ended explicitly below so
+            // a macro can still replace the text before finishing it.
+            clearState(finishSpan = false)
+
+            if (immediate) {
+                if (preeditLen > 0) backspaceHandler.sendBackspaceEvents(ic, preeditLen)
+                ic.commitText(outputText, 1)
+                composingSpanActive = false
+            } else if (expanded != null) {
+                // Replace the whole composing region with the expansion in one
+                // edit, then end the span. The word never blinks.
+                if (composingSpanActive) {
+                    ic.setComposingText(outputText, 1)
+                    ic.finishComposingText()
+                    composingSpanActive = false
+                } else {
+                    if (start >= 0 && preeditLen > 0) {
+                        ic.setSelection(start + preeditLen, start + preeditLen)
+                        ic.deleteSurroundingText(preeditLen, 0)
                     }
-                    // Pure commit: the text stays exactly as it is, so there is
-                    // nothing left to send to the editor.
-                    // Where our own commit left the caret, so its echo can be
-                    // recognised without a read.
-                    expectedEditorCaret = if (start >= 0) start + outputText.length else -1
-                    if (expanded != null) {
-                        lastExpandedMacro = MacroExpansionRecord(raw, outputText, System.currentTimeMillis())
-                    }
-                } finally {
-                    if (!alreadyBatched) ic.endBatchEdit()
+                    ic.commitText(outputText, 1)
                 }
             } else {
-                clearState()
+                // The composing text already is the word: ending the span commits
+                // it exactly once. Only the separator is new text.
+                finishComposingSpan(ic)
+                if (wordBreak.isNotEmpty()) ic.commitText(wordBreak, 1)
             }
-            service.evaluateAutoShift()
+
+            expectedEditorCaret = if (start >= 0) start + outputText.length else -1
+            if (expanded != null) {
+                lastExpandedMacro = MacroExpansionRecord(raw, outputText, System.currentTimeMillis())
+            }
+        } finally {
+            if (!alreadyBatched) ic.endBatchEdit()
         }
+        service.evaluateAutoShift()
     }
 
     /**
