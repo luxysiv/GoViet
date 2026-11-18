@@ -1144,9 +1144,18 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
         val toneKeyChar = canonical.lastOrNull()?.takeIf { isToneKey(it) }
         val currentTone = toneKeyChar?.let { Tone.fromKey(it) ?: Tone.NONE } ?: Tone.NONE
         val base = if (toneKeyChar != null) canonical.dropLast(1) else canonical
-        // Pressing the tone that is already on the syllable clears it, matching
-        // handleToneKey's untoggle rule.
-        val newRaw = if (targetTone == currentTone) base else base + key
+        // Only a DIFFERENT tone can be applied as a pure retone. The other two
+        // cases have engine-specific semantics that a clean re-adoption would
+        // silently change, so they are left to the ordinary raw insertion:
+        //  - 'z' consumes itself when clearing a tone ("esz" -> "e") and becomes
+        //    literal only when there is no tone to clear ("ez" -> "ez").
+        //  - repeating the current tone key untoggles it AND locks that key as
+        //    literal text ("es" + "s" -> "es", not "e"); see handleToneKey.
+        val newRaw = when {
+            targetTone == Tone.NONE -> base
+            targetTone == currentTone -> return false
+            else -> base + key
+        }
         if (newRaw.isEmpty() || newRaw == canonical) return false
         val newDisplay = process(newRaw)
         if (newDisplay.isEmpty() || adoptRoundTrip(newDisplay) == null) return false

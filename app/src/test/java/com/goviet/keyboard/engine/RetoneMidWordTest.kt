@@ -68,7 +68,7 @@ class RetoneMidWordTest {
     }
 
     @Test
-    fun typingDdonsgfStillRendersDongCleanly() {
+    fun typingDdoongsfStillRendersDongCleanly() {
         val editor = ComposingEditor(view)
         for (key in "ddoongsf") typeKey(editor, key)
 
@@ -77,12 +77,26 @@ class RetoneMidWordTest {
     }
 
     @Test
-    fun pressingTheSameToneTwiceClearsIt() {
+    fun pressingTheSameToneTwiceKeepsTheEngineLiteralKey() {
         val editor = ComposingEditor(view)
         livePreedit(editor, "ddoongsf", "đồng")
 
-        // Caret at the end, 'f' is already the syllable's tone -> untoggle.
+        // 'f' is already the syllable's tone: the engine untoggles it and locks
+        // the repeated key as literal text ("ddoongsff" -> "đôngf"), exactly as
+        // process("aff") -> "af". A clean retone would have dropped the 'f'.
         typeKey(editor, 'f')
+
+        assertEquals("đôngf", editor.text.toString())
+    }
+
+    @Test
+    fun clearToneKeyConsumesItselfInsteadOfGoingLiteral() {
+        val editor = ComposingEditor(view)
+        livePreedit(editor, "ddoongsf", "đồng")
+
+        // 'z' clears the tone and is consumed ("ddoongfz" -> "đông"), whereas a
+        // naive retone would have appended it as a literal ("đôngz").
+        typeKey(editor, 'z')
 
         assertEquals("đông", editor.text.toString())
     }
