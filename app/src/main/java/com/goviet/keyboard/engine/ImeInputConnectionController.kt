@@ -429,10 +429,19 @@ class ImeInputConnectionController(
             if (display.isNotEmpty() && inputEngine.retoneComposing(display, key)) {
                 // lastSetComposingText is left for updateComposingUI to advance,
                 // as with every other buffer mutation.
-                composingCursorIndex = rawIndexOfDisplay(
-                    inputEngine.composingRaw(), compileComposingText(), displayOffset,
-                    inputEngine.composeAsVietnamese
-                )
+                val newDisplay = compileComposingText()
+                composingCursorIndex = if (displayOffset >= display.length) {
+                    // The key was appended at the end of the preedit ("t" + "r"
+                    // -> "tr"). Re-mapping the OLD end offset into the new buffer
+                    // would stop one raw key short of the end and park the caret
+                    // between the two letters just typed.
+                    inputEngine.composingRawLength()
+                } else {
+                    rawIndexOfDisplay(
+                        inputEngine.composingRaw(), newDisplay, displayOffset,
+                        inputEngine.composeAsVietnamese
+                    )
+                }
                 return false
             }
         }

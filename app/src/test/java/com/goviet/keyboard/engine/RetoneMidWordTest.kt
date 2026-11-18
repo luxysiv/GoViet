@@ -102,6 +102,20 @@ class RetoneMidWordTest {
     }
 
     @Test
+    fun toneKeyAppendedAtTheEndKeepsTheCaretAtTheEnd() {
+        val editor = ComposingEditor(view)
+        // 'r' is a tone key, so the second keystroke goes through retone even
+        // though here it merely extends the bare onset "t" into "tr".
+        typeKey(editor, 't')
+        assertEquals("t", editor.text.toString())
+        assertEquals(1, controller.composingCursorIndex)
+
+        typeKey(editor, 'r')
+        assertEquals("tr", editor.text.toString())
+        assertEquals(2, controller.composingCursorIndex)
+    }
+
+    @Test
     fun caretInsideVowelMapsAcrossToneShapeChange() {
         val editor = ComposingEditor(view)
         livePreedit(editor, "ddoongsf", "đồng")
