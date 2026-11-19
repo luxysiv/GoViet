@@ -104,8 +104,8 @@ class RetoneMidWordTest {
     @Test
     fun toneKeyAppendedAtTheEndKeepsTheCaretAtTheEnd() {
         val editor = ComposingEditor(view)
-        // 'r' is a tone key, so the second keystroke goes through retone even
-        // though here it merely extends the bare onset "t" into "tr".
+        // 'r' is a tone key, but "t" has no nucleus to retone, so the key is
+        // appended literally and merely extends the onset into "tr".
         typeKey(editor, 't')
         assertEquals("t", editor.text.toString())
         assertEquals(1, controller.composingCursorIndex)
@@ -113,6 +113,45 @@ class RetoneMidWordTest {
         typeKey(editor, 'r')
         assertEquals("tr", editor.text.toString())
         assertEquals(2, controller.composingCursorIndex)
+    }
+
+    @Test
+    fun toneKeyAfterBareROnsetIsAppendedNotSwallowed() {
+        val editor = ComposingEditor(view)
+        typeKey(editor, 'r')
+        assertEquals("r", editor.text.toString())
+
+        // 'r' is itself a Telex tone letter, so the old retone path stripped it
+        // from the bare onset and kept only the newly typed 's'.
+        typeKey(editor, 's')
+        assertEquals("rs", editor.text.toString())
+        assertEquals("rs", engine.composingRaw().toString())
+        assertEquals(2, controller.composingCursorIndex)
+    }
+
+    @Test
+    fun toneKeyAfterBareSOnsetIsAppendedNotSwallowed() {
+        val editor = ComposingEditor(view)
+        typeKey(editor, 's')
+        assertEquals("s", editor.text.toString())
+
+        typeKey(editor, 'x')
+        assertEquals("sx", editor.text.toString())
+        assertEquals("sx", engine.composingRaw().toString())
+        assertEquals(2, controller.composingCursorIndex)
+    }
+
+    @Test
+    fun toneKeyAfterCompoundOnsetEndingInRKeepsWholeOnset() {
+        val editor = ComposingEditor(view)
+        typeKey(editor, 't')
+        typeKey(editor, 'r')
+        assertEquals("tr", editor.text.toString())
+
+        typeKey(editor, 's')
+        assertEquals("trs", editor.text.toString())
+        assertEquals("trs", engine.composingRaw().toString())
+        assertEquals(3, controller.composingCursorIndex)
     }
 
     @Test

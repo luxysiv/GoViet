@@ -175,7 +175,9 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
         val isValid: Boolean,
         val onsetLength: Int,
         val canonicalRaw: String,
-        val canonicalFoldLast: String? = null
+        val canonicalFoldLast: String? = null,
+        /** Length of the vowel core; zero for a bare onset such as "r" or "tr". */
+        val nucleusLength: Int = 0
     )
 
     sealed class CompositionResult {
@@ -1076,7 +1078,7 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
             canonicalFoldLastRaw(plainScratch, canonicalScratch, onset, nucleus, coda, validTone, word)
         } else null
 
-        return AdoptResult(isValid, onset.length, canonicalRaw, canonicalFoldLast)
+        return AdoptResult(isValid, onset.length, canonicalRaw, canonicalFoldLast, nucleus.length)
     }
 
     /**
@@ -1127,8 +1129,8 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
      * only the tone changes and no raw key ever appears in the display.
      *
      * Returns false when the buffer is not one clean adoptable syllable (a
-     * locked literal tail, a multi-syllable fragment, ...); callers then fall
-     * back to the ordinary raw insertion.
+     * locked literal tail, a multi-syllable fragment, a bare onset with no
+     * vowel to retone, ...); callers then fall back to the ordinary raw insertion.
      */
     fun retoneComposing(display: String, key: Char): Boolean {
         if (!isComposing() || !composeAsVietnamese || !vietnameseModeEnabled) return false
@@ -1138,6 +1140,14 @@ class VietnameseComposer(var options: EngineOptions = EngineOptions()) {
         // the displayed graphemes, so the caret can be mapped back exactly.
         val canonical = adopt.canonicalRaw
         if (process(canonical) != display) return false
+
+        // A bare onset has no vowel to carry a tone. Several onsets END in a Telex
+        // tone letter ("r", "s", "x", "tr"), so the last raw character is that
+        // consonant — not a tone to be replaced. Treating it as a tone used to
+        // strip the onset ("r" + s -> "s", "s" + x -> "x", "tr" + s -> "ts").
+        // Let the caller splice the key into the raw buffer instead: the kernel
+        // then renders the two consonants literally ("rs", "sx", "trs").
+        if (adopt.nucleusLength == 0) return false
 
         val lower = key.lowercaseChar()
         val targetTone = Tone.fromKey(lower) ?: return false
